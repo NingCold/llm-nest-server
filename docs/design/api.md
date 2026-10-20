@@ -1,18 +1,18 @@
-# 07 API 与事件
+# API 与事件
 
-[总纲](overview.md) · [存储与迁移](06-storage-and-migration.md) · [界面与桌面](08-frontend-and-desktop.md)
+[总纲](overview.md) · [存储与迁移](storage.md) · [界面与桌面](frontend.md)
 
 本文集中维护当前传输契约，后续能力单独列出，不预先固定尚未实现的路由。源码入口为 [HTTP](../../crates/web-server/src/social_api.rs)、[IPC](../../frontends/tauri/src-tauri/src/social_commands.rs)、[共享 DTO](../../features/social/src/wire.rs) 与 [持久事件](../../crates/events/src/social_event.rs)。
 
-## 1. 共享业务入口
+## 共享业务入口
 
 HTTP 与 Tauri 调用同一 SocialFeature 业务方法，传输层不实现身份、权限、记忆或调度规则。Feature trait 只负责生命周期与 downcast。显式记忆管理位于 SocialFeature 内部 memory 模块，ConsciousnessService 读取并构造上下文；窗口摘要由 summary 模块沿此边界生成与维护，原消息仍由聊天用例维护。
 
 外部业务字段为 camelCase，枚举值按各自 serde 契约；ID 为 UUID 字符串，revision、sequence、cursor 为十进制字符串。请求使用 requestId；expectedRevision 针对被修改对象，不能拿空间 revision 替代消息或成员 revision。
 
-个人屏蔽命令使用 `requestId`、`blocked`、`expectedRevision`（无条目为 null），返回带 `listed`、`blocked`、`revision` 的 ContactEntry；操作者取宿主当前账号。Conversation 的 `directBlocked` 表达任一方屏蔽后的私聊状态，群聊始终为 false。变更沿用 `contact_changed`，相关运行、计划和约定同时发出各自变更事件。详见[屏蔽规则](contact-blocking.md)。
+个人屏蔽命令使用 `requestId`、`blocked`、`expectedRevision`（无条目为 null），返回带 `listed`、`blocked`、`revision` 的 ContactEntry；操作者取宿主当前账号。Conversation 的 `directBlocked` 表达任一方屏蔽后的私聊状态，群聊始终为 false。变更沿用 `contact_changed`，相关运行、计划和约定同时发出各自变更事件。详见[身份与关系](accounts.md)。
 
-## 2. 当前接口
+## 当前接口
 
 HTTP 前缀为 `/api/social`。Web 与 Tauri 调用同一 SocialFeature。init 只返回公开账号、个人通讯录、窗口与模型选项；内部设定与绑定只通过管理员接口读取。实际操作者由后端固定，不接受客户端 senderId/operatorId 替换身份。当前完整接口列于下表。历史导入 DTO 沿用存储边界的 snake_case 字段，其余业务 DTO 为 camelCase。
 
@@ -73,9 +73,9 @@ HTTP 前缀为 `/api/social`。Web 与 Tauri 调用同一 SocialFeature。init �
 
 Message.images 返回 `{index,mime,byteLength}` 数组，Message.files 返回 `{index,name,mime,byteLength}` 数组；index 是原消息 body 的 part 索引，撤回后数组为空。图片读取返回 `{mime,data}`，HTTP 设置 `Cache-Control: no-store`。普通接口复核当前操作者的成员身份，AI 视角接口在同一只读事务复核管理员和目标账号成员身份；revision 不符或已撤回拒绝读取。仅消息发送 JSON 路由上限为 40 MiB，以容纳最多 8 MiB 图片与 20 MiB 文件的 base64，业务层分别检查限制；图片还校验真实格式和尺寸。接口不接受本地路径或外部 URL。
 
-普通文件下载统一返回 application/octet-stream、Content-Disposition: attachment、UTF-8 文件名、no-store 与 nosniff；不内联页面内容。IPC `social_save_file` 参数与 social_save_image 相同，复用原生对话框后的权限复核与原子文件写入，返回 cancelled 或 saved/fileName；Web 返回 downloaded/fileName。文件输入为 name/mime/data，最多 4 个、单个 10 MiB、合计 20 MiB，允许零字节；名称和 MIME 规则见[文件记录](file-messages.md)。
+普通文件下载统一返回 application/octet-stream、Content-Disposition: attachment、UTF-8 文件名、no-store 与 nosniff；不内联页面内容。IPC `social_save_file` 参数与 social_save_image 相同，复用原生对话框后的权限复核与原子文件写入，返回 cancelled 或 saved/fileName；Web 返回 downloaded/fileName。文件输入为 name/mime/data，最多 4 个、单个 10 MiB、合计 20 MiB，允许零字节；名称和 MIME 规则见[聊天与消息](conversations.md)。
 
-单窗口导出接受窗口 ID、`format`（markdown/json）、独立的 `includeImages` / `includeFiles`（HTTP 省略时均为 false，IPC 由客户端明确传入），不接受操作者、文件正文或目标路径。两个附件选项均关闭时 HTTP 返回 `{fileName,mediaType,messageCount,content}` JSON 文件内容包；任一开启时返回 ZIP 二进制，`Content-Disposition` 使用 UTF-8 filename*，`X-LLMN-Message-Count` 给出完整消息数。两者均设置 `Cache-Control: no-store`；ZIP 另设 `X-Content-Type-Options: nosniff`。Web 下载对应 Blob。IPC 的[保存适配](../../frontends/tauri/src-tauri/src/conversation_export.rs)打开原生“另存为”，取消返回 `{outcome:"cancelled"}`；成功写入返回 `{outcome:"saved",fileName,messageCount}`，文件名取实际保存目标。两个适配共用 SocialFeature 的读取和格式化，不产生持久事件。记录 JSON 的版本为无附件 v1、仅携图 v2、包含文件选项 v3，filePath 为 ZIP 中的实际相对路径；结构见[文件导出记录](file-message-export.md)。
+单窗口导出接受窗口 ID、`format`（markdown/json）、独立的 `includeImages` / `includeFiles`（HTTP 省略时均为 false，IPC 由客户端明确传入），不接受操作者、文件正文或目标路径。两个附件选项均关闭时 HTTP 返回 `{fileName,mediaType,messageCount,content}` JSON 文件内容包；任一开启时返回 ZIP 二进制，`Content-Disposition` 使用 UTF-8 filename*，`X-LLMN-Message-Count` 给出完整消息数。两者均设置 `Cache-Control: no-store`；ZIP 另设 `X-Content-Type-Options: nosniff`。Web 下载对应 Blob。IPC 的[保存适配](../../frontends/tauri/src-tauri/src/conversation_export.rs)打开原生“另存为”，取消返回 `{outcome:"cancelled"}`；成功写入返回 `{outcome:"saved",fileName,messageCount}`，文件名取实际保存目标。两个适配共用 SocialFeature 的读取和格式化，不产生持久事件。记录 JSON 的版本为无附件 v1、仅携图 v2、包含文件选项 v3，filePath 为 ZIP 中的实际相对路径；结构见[聊天与消息](conversations.md)。
 
 保存原图走独立 download 路由，返回原始二进制、实际图片 MIME、UTF-8 文件名、no-store 和 nosniff；重新复核消息版本和对应读取权限。IPC `social_save_image` 接受 `{id,index,revision,account}`，account 仅指定需复核管理员权限的只读账号视角，不替换实际操作者。保存位置只能来自原生对话框，关闭对话框后重新读取并校验；取消/成功结果分别为 `{outcome:"cancelled"}` / `{outcome:"saved",fileName}`。Web 使用 `{outcome:"downloaded",fileName}`，不声称已写入磁盘。
 
@@ -110,9 +110,9 @@ Memory 返回 id/actorId/conversationId/kind/text/status/revision/source/created
 
 Conversation.memoryOwnerIds 列出本窗口仍有 confirmed/stale 条目的 AI，包括已离群 AI，供详情页继续查看与遗忘；不使它重新成为成员。模型请求只读取当前运行 AI 的 confirmed 条目。
 
-共同 Account 字段为 id/kind/name/avatarRef/bio/status/revision，真人与 AI 相同。ManagedAi 包含 account、persona、binding、administrators(accountId/initial)、isInitialAdministrator，仅供有权限的管理接口。联系人操作返回 ContactEntry(ownerId/accountId/listed/revision)。
+共同 Account 字段为 id/kind/name/avatarRef/bio/status/revision，真人与 AI 相同。ManagedAi 包含 account、persona、binding、administrators(accountId/initial)、isInitialAdministrator，仅供有权限的管理接口。联系人操作返回 ContactEntry(ownerId/accountId/listed/blocked/revision)。
 
-binding.temperature 与 maxTokens 可省略或为 null；前者使用模型服务默认值，后者使用意识系统自动输出预算，均不继承全局 GUI 参数。显式值按协议/思考模式与模型容量校验，不静默裁减。init 的 ModelOption 增加 generationLimits，以 default/off/low/medium/high/max 为键，各值为 temperatureMax（null 表示该模式不可调）、minOutputTokens、maxOutputTokens（null 表示未声明）；当前社交返回的上限还受上下文容量约束。该数据描述模型选项，不包含任何 AI 的内部参数。字段的共享 HTTP/IPC 验证见 [参数记录](m1-generation-parameters.md)。
+binding.temperature 与 maxTokens 可省略或为 null；前者使用模型服务默认值，后者使用意识系统自动输出预算，均不继承全局 GUI 参数。显式值按协议/思考模式与模型容量校验，不静默裁减。init 的 ModelOption 增加 generationLimits，以 default/off/low/medium/high/max 为键，各值为 temperatureMax（null 表示该模式不可调）、minOutputTokens、maxOutputTokens（null 表示未声明）；当前社交返回的上限还受上下文容量约束。该数据描述模型选项，不包含任何 AI 的内部参数。字段的共享 HTTP/IPC 验证见 [AI 执行](execution.md)。
 
 AccountView 返回 operatorId 与 snapshot；snapshot.selfId/selfAccount 为被查看 AI，操作者仍为真实管理员。每次读取快照与分页历史复核管理授权，窗口按该 AI 的当前成员身份筛选；查看停用 AI 仍可行，退出群后不能读取该群。它是可手动刷新的只读快照，不使用实际操作者的全局事件订阅，不提供代发消息或远程登录令牌。
 
@@ -130,13 +130,13 @@ Conversation.contactSchedule 返回 settings 与 intents（全部活动及最近
 
 模型图片能力覆盖使用设置接口 `POST /api/models/image-input` / IPC `set_model_image_input`，共用 `{provider,model,imageInput}`；imageInput 为 true/false，null 表示跟随目录。成功返回更新后的 ProviderInfo 数组，保存失败保留原配置。ModelInfo 与社交 ModelOption 都提供 `imageInput: {support,source}`，support 为 supported/unsupported/unknown，source 为 config/catalog/builtin/unknown。
 
-普通社交 Init 的 `imageInputs` 仅将 AI 账号 ID 映射到三态能力，不包含模型绑定或内部设定；管理员只读账号视角没有输入区，返回空映射。能力设置不生成聊天事件；界面返回社交页时刷新快照。执行按实际冻结配置检查全部请求，明确不支持图片时保存 RunDetails.error.code 为 `image_input_unsupported`，不调用 provider，真人消息仍保存。详见[图片能力记录](image-capabilities.md)。
+普通社交 Init 的 `imageInputs` 仅将 AI 账号 ID 映射到三态能力，不包含模型绑定或内部设定；管理员只读账号视角没有输入区，返回空映射。能力设置不生成聊天事件；界面返回社交页时刷新快照。执行按实际冻结配置检查全部请求，明确不支持图片时保存 RunDetails.error.code 为 `image_input_unsupported`，不调用 provider，真人消息仍保存。详见[运行与配置](runtime.md)。
 
 摘要分页返回 settings/segments/hasMore，每页 50 段、按 throughSequence 降序，before 排除该边界。SummarySettings 返回 id（窗口 ID）、enabled、binding、revision；未配置时 revision="0"、enabled=false。保存参数为 requestId/expectedRevision/enabled/binding，binding 包含 providerId/modelId/reasoningEffort/maxTokens，不包含密钥、温度或 AI 人格。
 
 开始摘要参数为 requestId/retry，retry 为 null 表示下一段，或 {id, expectedRevision} 表示重建同一分段。没有较早原文时返回 null，不调用模型。摘要包含范围、text/status/revision、来源、模型绑定、attempt、错误和时间；sources 沿用 SourceRef 的 snake_case 字段（kind/message_id/conversation_id/revision），其余 DTO 为 camelCase。发起人由后端固定，范围由存储推导；调用方不能指定摘要正文、原文集合或任意操作者。配置/请求回执幂等，冲突返回共享错误。
 
-## 3. 发送与幂等
+## 发送与幂等
 
 ```json
 {
@@ -153,7 +153,7 @@ Conversation.contactSchedule 返回 settings 与 intents（全部活动及最近
 
 前端保存失败保留输入；未知发送结果继续使用原 requestId/expectedRevision 重试。后续刷新失败不撤销已收到的成功回执。编辑按消息自身版本检查，其他成员追加消息不会使无关编辑冲突。
 
-## 4. 持久事件
+## 持久事件
 
 SocialEvent 为 cursor + change。change.kind 当前为 actor_changed、contact_changed、conversation_changed、message_changed、memory_changed、summaries_changed、run_changed、bout_changed、plan_changed、participation_changed、contact_schedule_changed、conversation_list_changed。conversation_list_changed 带 conversationId/actorId/revision，客户端重读自己的列表状态；它不触发历史或意识重读。summaries_changed、participation_changed 与 contact_schedule_changed 只带 conversationId，分别重读摘要、窗口接话或约定状态；其余变更带实体 ID、revision 和适用的 conversationId。contact_changed 带 ownerId/accountId；memory_changed 带 conversationId/actorId/memoryId/revision，不含正文。通讯录变更与 Actor 的管理/资料/停用变更分别表达。
 
@@ -173,13 +173,13 @@ cursor 在本地库全局单调递增，与业务事务同提交。事件只保�
 
 回放至少一次，客户端按 cursor 去重，并在状态应用成功后推进游标。消息变更按 MessageId 读取，已加载的早期消息也能更新。持久事件由 SocialStore 提供，临时生成事件由 SocialFeature 发布；两者不依赖旧运行时事件总线。
 
-## 5. 临时生成事件
+## 临时生成事件
 
 SocialGenerationEvent 当前有 generation.delta、generation.reasoning_delta 和 execution.notice。正文/思考片段包含 runId、messageId、actorId、conversationId、deltaSeq、text；执行提示包含 conversationId/error，没有 run 的持久游标。
 
 普通 token 不写入持久日志。重连读取已保存草稿/终态，最终记录覆盖临时缓冲，终态后忽略迟到 delta。临时广播溢出发 resync，客户端清除旧历史页与临时缓冲后重新分页，草稿保留；重置前的读取响应不能填回旧正文。
 
-## 6. 启动、订阅与补齐
+## 启动、订阅与补齐
 
 init 在一致读取中返回 selfId/selfName/selfAccount、公开 accounts（含停用账号）、当前操作者的 addressBook、窗口列表元数据、模型选项和 cursor。通讯录按自己的 listed 条目展示，未列出和停用分别处理；accounts 保留用于群成员/历史身份与重新添加。公开快照不包含内部 persona/绑定/管理员，管理页面使用独立的获授权接口。列表 latestMessage 与意识系统的历史摘要分别处理。
 
@@ -208,24 +208,16 @@ HTTP 与 IPC 共用 SocialSubscription：先监听临时广播，再以 after=cu
 
 页面在注册前装好监听；主窗口重载/销毁释放旧等待。宿主最多等 10 秒，失败通过 backend-shutdown-failed 保留窗口并恢复编辑；成功才进入既有 Runtime 关闭阶段，未注册的初始页面可以直接关闭。该确认不传输草稿正文或文件路径。
 
-持久日志当前不压缩，尚未实现游标过期、空间过滤 watermark 和统一的所有边界错误。HTTP/IPC 在重放、溢出和订阅释放时使用同一业务语义；宿主退出等待运行中断保存和数据库 writer 收尾，见 [运行时](09-runtime-and-configuration.md#5-生命周期与关闭)。
+持久日志当前不压缩，尚未实现游标过期、空间过滤 watermark 和统一的所有边界错误。HTTP/IPC 在重放、溢出和订阅释放时使用同一业务语义；宿主退出等待运行中断保存和数据库 writer 收尾，见 [运行时](runtime.md#生命周期与关闭)。
 
-## 7. 错误与后续能力
+## 错误与后续能力
 
 共享业务错误为 code/message/retryable。目前 invalid_input → 400，not_found → 404，not_authorized → 403，revision_conflict → 409，model_unavailable/budget_exhausted → 422，storage_failure/unavailable → 503。IPC 使用相同业务错误体。社交 HTTP 的 JSON/Path/Query 解析失败也返回该结构，code 为 invalid_input、retryable 为 false；保留传输状态码：非法 JSON 语法、路径和查询为 400，JSON 字段/类型错误为 422，缺少 JSON Content-Type 为 415，超过正文上限为 413。当前不返回 currentRevision。
 
 消息已保存后的参与失败通过 executionNotice 或计划/运行状态表达，不能把保存回执改成失败。账号停用通过 account_disabled 提示，暂停、无效模型与订阅断线分别展示；磁盘不可写时不伪报已保存终态。
 
-后续能力按所属阶段扩展：阶段完整双适配验收归 M1；有限自动参与及一次性联系意图、免打扰已在 M3 两批接通；重复日程与自然语言约定另行设计。工具授权在具体产品需求确定后独立实施，不作为 M1 前置。授权与账号查看需由同一业务层验证真实操作者及目标范围，不接受前端任意替换 senderId。已读位置、列表搜索和联系人屏蔽已接通；其余能力按独立链路细化，不提供假成功占位接口。
+重复日程、自然语言约定和工具授权均为未来候选，见[候选清单](../project/backlog.md)。公开接口随具体用例扩展；实际操作者及目标范围由同一业务层核实。
 
-群话题接续的规则见 [意识系统](03-consciousness.md#23-从群聊接续到私聊)：打开唯一私聊不发消息，引用只传来源标识并复核双方权限；显式转发产生新的目标消息，不能授予源空间读取权。
+群话题接续的规则见 [意识系统](consciousness.md#从群聊接续到私聊)：打开唯一私聊不发消息，引用只传来源标识并复核双方权限；独立转发仍为候选，未来共享选定内容也不能授予源空间读取权。
 
 本地 HTTP 继续保留 loopback、Host/Origin 和客户端 Header 保护；未来公网认证另行设计。响应和事件不返回 Key、环境变量值或完整私人配置。目录打开 IPC 仍只接受 config/data 枚举，Web 无服务器目录打开接口。
-
-## 8. 验收
-
-1. HTTP/IPC 字段、业务状态、错误与顺序一致；框架拒绝和阶段完整异常场景单独验收。
-2. 初始化到订阅的间隙不漏事件，重复回放不重复消息，状态应用失败不推进游标。
-3. 断开订阅仍完成保存；重连和 resync 后终态覆盖 delta，旧读取不能恢复撤回内容。
-4. 幂等命令、revision 冲突、无效成员、越权读取和写入失败均有明确结果。
-5. M2 加入遗忘后，旧引用回放仍不能恢复失效内容；日志保留策略变化时补验游标过期与过滤补齐。

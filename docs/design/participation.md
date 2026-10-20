@@ -1,22 +1,22 @@
-# 04 参与与调度
+# 参与与调度
 
-[总纲](overview.md) · [聊天与消息](02-conversations-and-messages.md) · [AI 执行](05-ai-execution.md)
+[总纲](overview.md) · [聊天与消息](conversations.md) · [AI 执行](execution.md)
 
-M3 两批首版范围已实现；证据见 [参与节奏](m3-participation-rhythm.md) 与 [约定联系](m3-contact-intents.md)。本文描述当前规则，扩展范围独立列出。
+本文说明当前接话与约定联系规则。当前工作见[项目安排](../project/current.md)，未来候选见[候选清单](../project/backlog.md)。
 
-## 1. 职责
+## 职责
 
 SocialFeature 负责唤醒、等待、全局执行限额与关闭；SocialStore 在事务内选择目标、保存 ParticipationPlan、复核授权、预留额度及更新 Bout。当前实现位于 feature.rs/execution.rs 和 storage/social/rhythm.rs，不为 ParticipationService/Scheduler 名称单独建立空框架。
 
 意识系统为已经选定的 AI 与空间准备上下文，不决定谁发言。摘要是独立内部任务，不计入社交发言轮数、不触发接话或主动联系。当前群成员共享完整群历史；暂停和未被点名只影响发言资格，不缩小可见范围。
 
-## 2. 触发与决策
+## 触发与决策
 
 真人消息、结构化 @ / 回复、成功提交的回应消息和到期的一次性约定可创建计划；规则、成员或控制变化唤醒队列重新检查。token delta、思考、失败片段、工具轨迹和摘要完成均不触发自动接话。没有合格计划就不调用模型。
 
 决策以实际计划和窗口 ParticipationState 表达。state.reason 为 waiting、input_pending、turn_limit、daily_limit、token_limit、no_candidate、expired、idle、user_ended、policy_changed；失败细节仍在计划 failure 中。没有隐藏推理日志或自然语言意图识别。
 
-## 3. 确定性规则与优先级
+## 确定性规则与优先级
 
 开始前检查活动账号、窗口和成员、暂停、来源与版本、FIFO 队首、not_before/expires_at、模型配置和并发。自动计划另外复核 limitedAuto 与 policy_revision、轮数和每日预留额度。
 
@@ -24,9 +24,9 @@ SocialFeature 负责唤醒、等待、全局执行限额与关闭；SocialStore 
 
 同空间最多一个 AI 在生成，SocialFeature 全局最多 4 个社交 AI 运行；摘要另有一个独立槽位。取得全局槽位后重新读取计划，防止等待期间已被合并、取消或过期的旧计划开始。
 
-私聊屏蔽会拒绝新消息并停止当前交谈与排队回复；共同群的正常接话保持不变，见[联系人屏蔽](contact-blocking.md)。
+私聊屏蔽会拒绝新消息并停止当前交谈与排队回复；共同群的正常接话保持不变，见[身份与关系](accounts.md)。
 
-## 4. 首版参与规则
+## 参与规则
 
 | 规则 | 当前行为 |
 | --- | --- |
@@ -37,7 +37,7 @@ SocialFeature 负责唤醒、等待、全局执行限额与关闭；SocialStore 
 
 自动候选按稳定账号 ID 顺序轮转，跳过当前发言者、暂停、停用或已退出成员。这是确定性的轮流接话，不宣称具备语义相关性判断。模型文本不创建结构化 @，不能自行提高发言额度。开启规则本身不重放旧消息，也不授权未来主动联系。
 
-## 5. 连续输入与有限接话
+## 连续输入与有限接话
 
 私聊仅合并短等待期内、尚未开始、没有引用/回复/mentions 的普通输入计划，每个计划最多 20 条。保留全部原消息和发送回执；input_ids 保存所有输入，trigger_id 指向最后一条。新输入延后 not_before；已开始的计划和各自携带来源的引用/回复计划不合并。任一合并来源修改或撤回都会取消该排队计划。
 
@@ -47,7 +47,7 @@ SocialFeature 负责唤醒、等待、全局执行限额与关闭；SocialStore 
 
 每日额度在运行开始事务中按整个允许的输入容量 + 输出预留扣减，不依赖供应商 usage；它是保守的调用上限，不是账单估算。开始后失败、取消、崩溃也不返还。达到次数或容量上限就等待新授权，不缩减模型输出、不自动切换模型。真人输入重置连续计数，新 Bout 重置该 Bout 计数；结束、暂停、重启与模型更换不清零每日额度。UTC 日跨过后使用新账本；时钟回拨不能重新打开已花过的旧日期额度。
 
-## 6. 等待、结束与暂停
+## 等待、结束与暂停
 
 - Wait：不生成假消息，保留 Bout 与话题。限额或无候选时显示原因。
 - EndBout：显式结束取消当前窗口队列与运行，保留长期窗口、消息和额度记录。
@@ -59,7 +59,7 @@ SocialFeature 负责唤醒、等待、全局执行限额与关闭；SocialStore 
 
 独立授权的 pending 未来约定与 Bout 分开，显式结束保留它们；已经领取、排队或执行的本次联系随当前计划停止。关闭主动联系会撤销全部未完成意图。
 
-## 7. 持久参与计划
+## 持久参与计划
 
 ParticipationPlan 保存 id、conversation_id、actor_id、trigger_id、trigger_sequence、ordinal、membership_revision、status、run_id、failure、revision、created_at，并增加 automatic、input_ids、not_before、expires_at、policy_revision。同一消息/目标唯一，明确目标顺序按 ordinal 保存；合并更新计划原 ID 和版本，旧请求重试不另建计划。
 
@@ -67,7 +67,7 @@ ParticipationPlan 保存 id、conversation_id、actor_id、trigger_id、trigger_
 
 SQLite v10 新增 participation_policies、participation_state、participation_daily_budget；v11 扩展计划触发：trigger_id 与 contact_intent_id 恰有一个，旧消息计划不变；意图不填虚构 MessageId。状态/预算变化发布 participation_changed 引用事件，Web/IPC 重新读取窗口快照。
 
-## 8. 一次性约定联系与免打扰
+## 一次性约定联系与免打扰
 
 主动联系默认关闭。真人成员在聊天详情单独开启 ContactSettings.enabled，再明确创建一个 ContactIntent；群有限接话开关、角色文本、记忆与模型输出均不构成主动联系授权。
 
@@ -90,14 +90,10 @@ ContactIntent 保存创建者、稳定 AI 账号、窗口、不可变约定内�
 
 约定通过 ConsciousnessService 读取当前窗口上下文，完整容纳授权内容；它是独立触发来源，不沿用最近的跨窗口引用。正常模型配置修改只影响新的运行，授权关闭、来源修订等仍能使在飞提交失效。界面展示全部活动约定和最近 50 条记录，全部意图仍持久保存。
 
-## 9. 时间、重启与失败
+## 时间、重启与失败
 
 Clock 提供 UTC now 与可取消的 wait_until。SystemClock 用 Tokio 单调计时等待，最多每 30 秒复核 UTC，唤醒后仍复核持久时点；墙钟回拨可延后执行，不提前发言。ManualClock 通过通知驱动等待，无需在测试里真实等待几分钟。
 
 每窗口只有一个调度任务；新输入/控制唤醒同一任务，不按每条消息积累长期等待任务。启动重新检查 queued 计划、open Bout 与 pending/claimed 意图：未过期仍授权的计划继续，过期计划取消，已开始运行恢复为 interrupted，禁止重放。关闭先取消定时等待与执行，等待任务和存储收尾，不在退出后开启新调用。
 
 未开始的 pending/claimed 联系在重启后按当前授权和有效期重评；executing 恢复为 uncertain（已过期则 expired），不自动再调用模型。意图不是外部 exactly-once 保证。应用关闭时无系统定时器、后台唤醒或离线推送；错过有效期不集中补发。旧 Bout 若已空闲且无队列/运行，先关闭，再为新到期联系建立新 Bout。
-
-## 10. 验收
-
-以独立临时库和模拟 provider 验证默认不自动发言、合并原文/回执、运行快照稳定、轮数与每日额度、来源修订、暂停/结束/规则撤销、崩溃恢复及过期/空闲。可控时钟覆盖等待、唤醒、回拨和退出；HTTP/IPC 调用同一用例，实际页面检查保存及状态文案。具体结果见 [参与节奏记录](m3-participation-rhythm.md) 与 [约定联系记录](m3-contact-intents.md)。重复日程、条件监控、全局/循环免打扰、自然语言时机识别与语义候选选择仍为后续扩展。
