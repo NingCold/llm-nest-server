@@ -1,26 +1,38 @@
 {
   "schemaVersion": 1,
-  "status": "unreleased",
+  "status": "locally-validated-not-deployed",
+  "buildProfile": "debug",
+  "target": "x86_64-pc-windows-msvc",
   "protocol": {
     "node": "v4",
     "encryption": "sealedV1"
   },
   "server": {
     "version": "0.1.1-alpha.11",
-    "commit": null,
+    "commit": "e3970efb080adf45e373f449a7dd47af91ee3bd8",
+    "sha256": "249ab91bb1239db661a2e634f4717f51d60037907c726a9b9b413e7262f169fd",
     "imageDigest": null
   },
   "web": {
-    "version": null,
-    "commit": null,
-    "sha256": null
+    "version": "0.1.1-alpha.11",
+    "commit": "01516626083ac84466da666eb843789aeeb40361",
+    "sha256": "748c066e0b31c843c28a648f448054bff68e58ecfebb31d982fabdbfb3cd903b"
   },
   "agent": {
-    "version": null,
-    "commit": null,
-    "sha256": null
+    "version": "0.1.1-alpha.11",
+    "commit": "ce01a27eeed058bc54ff1b3f957a93f2b376e7a0",
+    "sha256": "09cd1b007aa7e66a66a91604faf470d1bbbf17f38c5e777001ff9e3594cd5a24"
   },
   "connector": {
-    "commit": null
+    "commit": "cda5facfc441890cbc053db8374ea2141580689d"
+  },
+  "clientCryptoFixture": {
+    "commit": "01516626083ac84466da666eb843789aeeb40361",
+    "manifestSha256": "b1303fd64b18521c971398941f917438ab978b51289913766780b0e87fe1636c"
+  },
+  "validation": {
+    "fullSimulatedModelCalls": 21,
+    "migrationSimulatedModelCalls": 0,
+    "realModelCalls": 0
   }
 }
