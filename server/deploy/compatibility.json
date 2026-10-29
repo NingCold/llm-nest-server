@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "status": "unreleased",
+  "protocol": {
+    "node": "v4",
+    "encryption": "sealedV1"
+  },
+  "server": {
+    "version": "0.1.1-alpha.11",
+    "commit": null,
+    "imageDigest": null
+  },
+  "web": {
+    "version": null,
+    "commit": null,
+    "sha256": null
+  },
+  "agent": {
+    "version": null,
+    "commit": null,
+    "sha256": null
+  },
+  "connector": {
+    "commit": null
+  }
+}

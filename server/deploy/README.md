@@ -1,18 +1,16 @@
 # 运行内网测试服务
 
-[服务说明](../README.md) · [验证指南](../../../docs/validation/README.md)
+[服务说明](../README.md) · [验证指南](../../docs/validation.md)
 
 这套 Compose 在一台 Linux 服务器运行 PostgreSQL、聊天服务和 HTTPS 入口。只有 HTTPS 的 8443 端口发布到指定 Tailscale 地址，数据库和应用端口留在容器网络内。当前配置使用私有测试收件箱，不发送真实邮件。
 
 服务器需要 Docker Compose。客户端先构建 Web，再将明确版本的静态产物和 SHA-256 清单交给服务端。Docker 不直接读取客户端目录，也不编译 Agent。
 
 ```sh
-pnpm --dir client/web build
-python scripts/package-web.py --dist client/web/dist --version 0.1.1-alpha.11 --output /path/to/web-artifact
 python scripts/prepare-cloud-context.py --web-artifact /path/to/web-artifact/llmn-web-0.1.1-alpha.11.tar.gz --web-manifest /path/to/web-artifact/web-manifest.json --web-version 0.1.1-alpha.11 --output /path/to/cloud-context
 ```
 
-版本参数选择实际构建的客户端版本。打包目录与构建上下文必须为空，不会覆盖旧包。上下文创建时验证版本、摘要和归档路径，只加入 `server/cloud`、`connector`、`crates/social` 的受 Git 跟踪文件，并用 `cargo update --workspace --offline` 从现有锁文件收敛最小工作区，核对依赖版本保持固定；需要本机已有对应 Cargo 索引缓存。将生成的上下文复制到构建机器，在部署环境设置 `CLOUD_BUILD_CONTEXT` 为其绝对路径。上下文包含固定 Web 清单，不含个人配置、模型密钥或聊天库。服务端、Web 和 Agent 的版本可以独立选择；部署时保留实际兼容组合及摘要，不用 `latest` 代替产物版本。
+版本参数选择实际构建的客户端版本。打包目录与构建上下文必须为空，不会覆盖旧包。上下文创建时验证版本、摘要和归档路径，只加入 `server`、`connector`、`crates/social` 的受 Git 跟踪文件，并用 `cargo update --workspace --offline` 从现有锁文件收敛最小工作区，核对依赖版本保持固定；需要本机已有对应 Cargo 索引缓存。将生成的上下文复制到构建机器，在部署环境设置 `CLOUD_BUILD_CONTEXT` 为其绝对路径。上下文包含固定 Web 清单，不含个人配置、模型密钥或聊天库。服务端、Web 和 Agent 的版本可以独立选择；部署时保留实际兼容组合及摘要，不用 `latest` 代替产物版本。
 
 ## 准备目录与证书
 
@@ -36,13 +34,13 @@ CLOUD_PUBLIC_URL=https://100.64.0.10:8443
 CLOUD_DATA_DIR=/srv/llmn-test/data
 CLOUD_CERT_DIR=/srv/llmn-test/private/tls
 TAILSCALE_IP=100.64.0.10
+CLOUD_BUILD_CONTEXT=/path/to/cloud-context
 ```
 
-在仓库根目录构建网页并启动：
+将已核验的构建目录填入私有配置后，在仓库根目录启动：
 
 ```bash
-pnpm --dir client/web build
-docker compose --env-file /srv/llmn-test/private/cloud.env -f server/cloud/deploy/compose.yaml up -d --build
+docker compose --env-file /srv/llmn-test/private/cloud.env -f server/deploy/compose.yaml up -d --build
 curl --cacert /srv/llmn-test/private/tls/ca.crt https://100.64.0.10:8443/health
 ```
 
@@ -51,8 +49,8 @@ curl --cacert /srv/llmn-test/private/tls/ca.crt https://100.64.0.10:8443/health
 ## 邀请与测试邮件
 
 ```bash
-docker compose --env-file /srv/llmn-test/private/cloud.env -f server/cloud/deploy/compose.yaml exec app cloud-server invite 7
-docker compose --env-file /srv/llmn-test/private/cloud.env -f server/cloud/deploy/compose.yaml exec app cloud-server revoke-invite 邀请码
+docker compose --env-file /srv/llmn-test/private/cloud.env -f server/deploy/compose.yaml exec app cloud-server invite 7
+docker compose --env-file /srv/llmn-test/private/cloud.env -f server/deploy/compose.yaml exec app cloud-server revoke-invite 邀请码
 ```
 
 第一个命令返回邀请码，交给受邀人使用，也可以组成站点的 `/#/register?invite=邀请码` 链接。邮件写入 `data/outbox` 下的 JSON 文件，包含收件人和验证或重置链接。维护者在服务器上读取对应邮件，不把整个目录公开到网站。
@@ -79,7 +77,7 @@ python scripts/cloud_acceptance.py \
 
 ## 切换为强制加密
 
-先更新客户端、Agent 与服务端，保持 `CLOUD_REQUIRE_ENCRYPTION=false` 供现有记录转换。按[迁移说明](../../../docs/migration.md#现有云端记录转为加密)完成一致备份、窗口转换、节点资料同步和独立恢复核对；转换工具不会自动建立用户信任，也不会自动清理旧备份。
+先更新客户端、Agent 与服务端，保持 `CLOUD_REQUIRE_ENCRYPTION=false` 供现有记录转换。按[迁移说明](../../docs/migration.md#现有云端记录转为加密)完成一致备份、窗口转换、节点资料同步和独立恢复核对；转换工具不会自动建立用户信任，也不会自动清理旧备份。
 
 确认日常账号已有可信设备和恢复文件，使用中的窗口与节点资料都已完成转换后，在私有 `cloud.env` 设置 `CLOUD_REQUIRE_ENCRYPTION=true`，重新创建应用容器。此时旧客户端不能发送明文，新窗口需先准备加密；明文管理转发、旧格式导入和同机明文补传也会被拒绝。升级或切换不会重新执行旧消息和约定。
 

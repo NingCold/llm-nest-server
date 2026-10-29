@@ -55,9 +55,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::create_dir_all(&attachments)?;
     let attachments = attachments.canonicalize()?;
-    let web_dir =
-        PathBuf::from(std::env::var("CLOUD_WEB_DIR").unwrap_or_else(|_| "client/web/dist".into()))
-            .canonicalize()?;
+    let web_dir = PathBuf::from(std::env::var("CLOUD_WEB_DIR").unwrap_or_else(|_| "web".into()))
+        .canonicalize()?;
     if !web_dir.join("index.html").is_file() {
         return Err("请先构建 Web 界面".into());
     }

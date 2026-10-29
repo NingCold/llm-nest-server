@@ -1,21 +1,21 @@
 # 云端聊天服务
 
-[服务端](../README.md) · [开发指南](../../docs/development.md) · [API](../../docs/design/api.md)
+[项目首页](../README.md) · [开发指南](../docs/development.md) · [API](../docs/design/api.md)
 
 `cloud-server` 独立运行，使用 PostgreSQL 保存账号、认证、联系人、唯一私聊、群与成员、消息、个人读态、AI 节点绑定与执行任务及事件。图片和普通文件字节保存在独立持久目录。它不依赖本地 Runtime、SocialStore、模型客户端或 AI 执行器。
 
 服务提供邀请注册、邮箱验证、密码登录与找回、联系人、真人与 AI 的私聊和群聊。消息支持附件、编辑、撤回、搜索和导出；群内可管理成员、提及或回复 AI，也可以开启有限自动接话；聊天详情支持暂停、结束和一次性约定联系。私聊可屏蔽，管理员可停用或恢复 AI。
 
-模型调用和意识资料保存在独立 [Agent 节点](../../agent/node/README.md)。服务负责节点配对、任务与来源权限、约定到期和自动调用次数，并转发在线记忆和摘要操作；群里的原文也能按权限带回私聊继续讨论。完整接口见 [API](../../docs/design/api.md)，后续范围见[当前安排](../../docs/project/current.md)。
+模型调用和意识资料保存在独立 [Agent 节点](https://github.com/NingCold/llm-nest-agent)。服务负责节点配对、任务与来源权限、约定到期和自动调用次数，并转发在线记忆和摘要操作；群里的原文也能按权限带回私聊继续讨论。完整接口见 [API](../docs/design/api.md)，后续范围见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
 
 ## 启动
 
-私聊、群聊、附件和 AI 资料可用密文保存，服务保管公开设备信息、密钥投递和加密恢复资料，不保管解密秘密。旧聊天可由有权客户端转换，保留作者、顺序和来源关系；客户端从恢复文件重新核对完整历史后才完成。部署时可开启 `CLOUD_REQUIRE_ENCRYPTION`，拒绝旧客户端发送明文；切换前须完成备份和资料准备。详见[加密契约](../../docs/design/crypto-contract.md)，联调见[当前安排](../../docs/project/current.md)。
+私聊、群聊、附件和 AI 资料可用密文保存，服务保管公开设备信息、密钥投递和加密恢复资料，不保管解密秘密。旧聊天可由有权客户端转换，保留作者、顺序和来源关系；客户端从恢复文件重新核对完整历史后才完成。部署时可开启 `CLOUD_REQUIRE_ENCRYPTION`，拒绝旧客户端发送明文；切换前须完成备份和资料准备。详见[加密契约](../docs/design/crypto-contract.md)，联调见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
 
 先构建静态页面并准备 PostgreSQL：
 
 ```bash
-pnpm --dir client/web build
+export CLOUD_WEB_DIR=/absolute/path/to/verified-web
 cargo run -p cloud-server --locked
 ```
 
@@ -26,7 +26,7 @@ cargo run -p cloud-server --locked
 | `CLOUD_DATABASE_URL` | PostgreSQL 连接串；启动自动运行顺序迁移 |
 | `CLOUD_PUBLIC_URL` | 页面公开来源；HTTPS，本机开发允许 localhost HTTP |
 | `CLOUD_ATTACHMENTS_DIR` | 附件持久目录，与静态网页和测试收件箱分开 |
-| `CLOUD_WEB_DIR` | 静态目录，默认 `client/web/dist` |
+| `CLOUD_WEB_DIR` | 静态目录，默认 `web` |
 | `CLOUD_BIND` | 监听地址，默认 `127.0.0.1:8787` |
 | `CLOUD_SMTP_HOST`、`CLOUD_SMTP_FROM` | 邮件发送配置；可配 `CLOUD_SMTP_PORT`、`CLOUD_SMTP_USERNAME`、`CLOUD_SMTP_PASSWORD` |
 | `CLOUD_MAIL_OUTBOX` | 绝对路径的私有测试收件箱；设置后使用文件邮件，不发送 SMTP |
@@ -37,7 +37,7 @@ cargo run -p cloud-server --locked
 
 ## 验证与迁移边界
 
-设置独立测试库的 `CLOUD_TEST_DATABASE_URL` 后运行 `cargo test -p cloud-server -- --nocapture`。测试为每例建立隔离 schema，未设置变量时数据库测试会跳过，不能当成完整验证。当前验证结果集中在[验证指南](../../docs/validation/README.md)。
+设置独立测试库的 `CLOUD_TEST_DATABASE_URL` 后运行 `cargo test -p cloud-server -- --nocapture`。测试为每例建立隔离 schema，未设置变量时数据库测试会跳过，不能当成完整验证。当前验证结果集中在[验证指南](https://github.com/NingCold/llm-nest/blob/main/docs/validation/README.md)。
 
 [本地数据样本](tests/fixtures/README.md) 继续验证旧 DTO 映射。正式迁移接收使用 `connector::migration` 的版本 1 DTO：登录真人通过 `POST /api/migration/preview` 提交 `MigrationSnapshot`，核对预览后，以 `POST /api/migration/import` 提交 `{snapshot, previewDigest}`。两者沿用会话和 `X-LLMN-Client`/来源检查，上限为 128 MiB，反向代理同样允许 128 MiB。
 

@@ -4,7 +4,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/social crates/social
 COPY connector connector
-COPY server/cloud server/cloud
+COPY server server
 RUN cargo build --release --locked -p cloud-server
 
 FROM debian:bookworm-slim
