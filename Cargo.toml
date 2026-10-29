@@ -3,6 +3,8 @@ resolver = "2"
 members = ["server", "connector", "crates/social"]
 
 [workspace.package]
+license = "Apache-2.0"
+repository = "https://github.com/NingCold/llm-nest-server"
 version = "0.1.1-alpha.11"
 edition = "2024"
 

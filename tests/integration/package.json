@@ -7,5 +7,6 @@
     "@noble/curves": "2.4.0",
     "fake-indexeddb": "6.2.5",
     "fflate": "0.8.2"
-  }
+  },
+  "license": "Apache-2.0"
 }
