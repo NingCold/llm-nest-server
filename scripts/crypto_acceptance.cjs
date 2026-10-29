@@ -244,7 +244,12 @@ max_tokens = 512
   step('crypto-authorize-admin', nodeDir, aiId, human.account, human.device);
   let running = startNode(nodeDir);
   const managed = () => http(human, '/ai');
-  await waitFor(managed, rows => rows.find(row => row.account.id === aiId)?.node?.online, 'encrypted node online');
+  await waitFor(() => {
+    if (running.exitCode !== null || running.signalCode !== null) {
+      throw new Error(`Encrypted node exited before online: exitCode=${running.exitCode}, signal=${running.signalCode}; log: ${path.join(nodeDir, 'test.log')}`);
+    }
+    return managed();
+  }, rows => rows.find(row => row.account.id === aiId)?.node?.online, 'encrypted node online');
   if (materialMigration) {
     phase = 'legacy Agent materials and recovered replacement';
     const result = await materialMigration.run({ fixture: materialFixture, human, other, aiId, nodeDir, step, http, sql, directory, running, stopNode, startNode, waitFor, modelInputs, pairNode, recoveryPath, identity, peer, trust, share });
