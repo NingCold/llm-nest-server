@@ -1,19 +1,36 @@
-# 运行内网测试服务
+# 部署云端服务
 
 [服务说明](../README.md) · [验证指南](../../docs/validation.md)
 
 这套 Compose 在一台 Linux 服务器运行 PostgreSQL、聊天服务和 HTTPS 入口。只有 HTTPS 的 8443 端口发布到指定 Tailscale 地址，数据库和应用端口留在容器网络内。当前配置使用私有测试收件箱，不发送真实邮件。
 
-服务器需要 Docker Compose。客户端先构建 Web，再将明确版本的静态产物和 SHA-256 清单交给服务端。Docker 不直接读取客户端目录，也不编译 Agent。
+服务器需要 Docker Compose。Compose 只启动 `CLOUD_SERVER_IMAGE` 指定的本机镜像，不现场构建或拉取同名应用镜像；未设置变量或尚未加载镜像时直接报错。PostgreSQL、附件、私有环境和证书目录继续沿用。
+
+## 使用发布镜像
+
+下载同一服务端 Release 的镜像、清单、许可证与 SHA256SUMS，在附件所在目录核对后加载：
+
+```sh
+sha256sum --check SHA256SUMS
+docker load --input llmn-server-image.tar.gz
+docker image inspect llmn-server:v0.1.1-alpha.11
+```
+
+在私有 `cloud.env` 中设置 `CLOUD_SERVER_IMAGE=llmn-server:v0.1.1-alpha.11`，按下文启动。版本换成实际核验的固定版本；保留上一可回退镜像和兼容组合，不通过删除数据更新服务。仅在维护者公开草稿后，固定 Release 附件才可下载。
+
+## 从源码准备镜像
+
+客户端先构建 Web，将明确版本的静态产物和 SHA-256 清单交给服务端。Docker 不直接读取客户端目录，也不编译 Agent。在服务端仓库准备独立构建目录：
 
 ```sh
 cargo about generate --manifest-path server/Cargo.toml --target x86_64-unknown-linux-gnu --locked --fail --config scripts/licenses/about.toml --output-file /path/to/THIRD-PARTY-NOTICES.txt scripts/licenses/notices.hbs
-python scripts/prepare-cloud-context.py --third-party-notices /path/to/THIRD-PARTY-NOTICES.txt --web-artifact /path/to/web-artifact/llmn-web-0.1.1-alpha.11.tar.gz --web-manifest /path/to/web-artifact/web-manifest.json --web-version 0.1.1-alpha.11 --output /path/to/cloud-context
+python scripts/prepare-cloud-context.py --third-party-notices /path/to/THIRD-PARTY-NOTICES.txt --web-artifact /path/to/web-artifact/llmn-web-0.1.1-alpha.13.tar.gz --web-manifest /path/to/web-artifact/web-manifest.json --web-version 0.1.1-alpha.13 --output /path/to/cloud-context
+docker build --tag llmn-server:local-reviewed /path/to/cloud-context
 ```
 
 使用 cargo-about 0.9.3 生成 Rust 依赖声明；发布工作流从官方固定版本下载并核验 SHA-256，不现场编译此工具。生成过程允许联网取得上游准确许可证文本，不能改用离线标准文本代替。镜像在 `/usr/share/doc/llmn-server/` 随附根 LICENSE、NOTICE 与 `THIRD-PARTY-NOTICES.txt`；Web 自带的许可证声明保留在 Web 产物中，Debian 运行库的 copyright 文件仍在 `/usr/share/doc/`。
 
-版本参数选择实际构建的客户端版本。打包目录与构建上下文必须为空，不会覆盖旧包。上下文创建时验证版本、摘要和归档路径，只加入 `server`、`connector`、`crates/social` 的受 Git 跟踪文件，并用 `cargo update --workspace --offline` 从现有锁文件收敛最小工作区，核对依赖版本保持固定；需要本机已有对应 Cargo 索引缓存。将生成的上下文复制到构建机器，在部署环境设置 `CLOUD_BUILD_CONTEXT` 为其绝对路径。上下文包含固定 Web 清单，不含个人配置、模型密钥或聊天库。服务端、Web 和 Agent 的版本可以独立选择；部署时保留实际兼容组合及摘要，不用 `latest` 代替产物版本。
+版本参数选择实际构建的客户端版本。打包目录与构建上下文必须为空，不会覆盖旧包。上下文创建时验证版本、摘要和归档路径，只加入 `server`、`connector`、`crates/social` 的受 Git 跟踪文件，并用 `cargo update --workspace --offline` 从现有锁文件收敛最小工作区，核对依赖版本保持固定；需要本机已有对应 Cargo 索引缓存。可以将生成的上下文复制到构建机器后再构建；在私有部署环境设置 `CLOUD_SERVER_IMAGE=llmn-server:local-reviewed`，与实际构建的镜像名保持一致。上下文包含固定 Web 清单，不含个人配置、模型密钥或聊天库。服务端、Web 和 Agent 的版本可以独立选择；部署时保留实际兼容组合及摘要，不用 `latest` 代替产物版本。
 
 ## 准备目录与证书
 
@@ -37,13 +54,13 @@ CLOUD_PUBLIC_URL=https://100.64.0.10:8443
 CLOUD_DATA_DIR=/srv/llmn-test/data
 CLOUD_CERT_DIR=/srv/llmn-test/private/tls
 TAILSCALE_IP=100.64.0.10
-CLOUD_BUILD_CONTEXT=/path/to/cloud-context
+CLOUD_SERVER_IMAGE=llmn-server:v0.1.1-alpha.11
 ```
 
-将已核验的构建目录填入私有配置后，在仓库根目录启动：
+将 `compose.yaml` 与 `nginx.conf` 放入独立部署目录（下例为 `/srv/llmn-test/deploy/`）。保留原私有环境文件和数据，确认 `CLOUD_SERVER_IMAGE` 对应的镜像已加载后启动；部署目录无需源码或构建上下文：
 
 ```bash
-docker compose --env-file /srv/llmn-test/private/cloud.env -f server/deploy/compose.yaml up -d --build
+docker compose --env-file /srv/llmn-test/private/cloud.env -f /srv/llmn-test/deploy/compose.yaml up -d
 curl --cacert /srv/llmn-test/private/tls/ca.crt https://100.64.0.10:8443/health
 ```
 
@@ -52,8 +69,8 @@ curl --cacert /srv/llmn-test/private/tls/ca.crt https://100.64.0.10:8443/health
 ## 邀请与测试邮件
 
 ```bash
-docker compose --env-file /srv/llmn-test/private/cloud.env -f server/deploy/compose.yaml exec app cloud-server invite 7
-docker compose --env-file /srv/llmn-test/private/cloud.env -f server/deploy/compose.yaml exec app cloud-server revoke-invite 邀请码
+docker compose --env-file /srv/llmn-test/private/cloud.env -f /srv/llmn-test/deploy/compose.yaml exec app cloud-server invite 7
+docker compose --env-file /srv/llmn-test/private/cloud.env -f /srv/llmn-test/deploy/compose.yaml exec app cloud-server revoke-invite 邀请码
 ```
 
 第一个命令返回邀请码，交给受邀人使用，也可以组成站点的 `/#/register?invite=邀请码` 链接。邮件写入 `data/outbox` 下的 JSON 文件，包含收件人和验证或重置链接。维护者在服务器上读取对应邮件，不把整个目录公开到网站。
@@ -74,9 +91,9 @@ python scripts/cloud_acceptance.py \
   --output target/cloud-work/accounts.private.json
 ```
 
-脚本假定服务器目录下有 `src/` 源码、`private/cloud.env` 和 `data/outbox`，SSH 用户可使用 `sudo -n` 运行测试容器命令。
+脚本假定服务器目录下有 `deploy/compose.yaml`、`private/cloud.env` 和 `data/outbox`，SSH 用户可使用 `sudo -n` 运行测试容器命令。
 
-备份时先停止应用写入，保留 PostgreSQL 导出和同一时刻的附件目录，再恢复应用。恢复时两者一起恢复，核对附件引用。不要用删除持久卷的方式更新服务；日常更新只重新构建并启动应用容器。
+备份时先停止应用写入，保留 PostgreSQL 导出和同一时刻的附件目录，再恢复应用。恢复时两者一起恢复，核对附件引用。不要用删除持久卷的方式更新服务；日常更新先加载已核验的新镜像、更新 `CLOUD_SERVER_IMAGE`，再重新创建应用容器。
 
 ## 切换为强制加密
 

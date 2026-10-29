@@ -27,7 +27,7 @@ root = Path(sys.argv[1])
 if not root.is_absolute() or root.resolve() != root:
     raise SystemExit("FAIL: server-root must be an absolute resolved path")
 compose = ["docker", "compose", "--env-file", str(root / "private/cloud.env"),
-           "-f", str(root / "src/server/deploy/compose.yaml")]
+           "-f", str(root / "deploy/compose.yaml")]
 
 def run(args, *, data=None, output=None, label="remote command"):
     result = subprocess.run(args, input=data, stdout=output or subprocess.PIPE,
@@ -192,7 +192,7 @@ finally:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server-host", required=True, help="SSH destination for the authorized isolated server")
-    parser.add_argument("--server-root", required=True, help="Absolute resolved directory containing src/, private/, data/")
+    parser.add_argument("--server-root", required=True, help="Absolute resolved directory containing deploy/, private/, data/")
     args = parser.parse_args()
     command = " ".join(shlex.quote(a) for a in ["sudo", "-n", "python3", "-", args.server_root])
     wrapped = "try:\n" + "".join("    " + line + "\n" for line in REMOTE.splitlines()) + """

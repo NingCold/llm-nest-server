@@ -65,12 +65,12 @@ def main():
     parser.add_argument("--url", required=True)
     parser.add_argument("--ca", required=True)
     parser.add_argument("--server-host", required=True)
-    parser.add_argument("--server-root", required=True, help="Absolute directory containing src/, private/, data/")
+    parser.add_argument("--server-root", required=True, help="Absolute directory containing deploy/, private/, data/")
     parser.add_argument("--client-host", required=True)
     parser.add_argument("--output", required=True, help="Ignored private JSON file for subsequent manual tests")
     args = parser.parse_args()
     root = args.server_root.rstrip("/")
-    compose = ["sudo", "-n", "docker", "compose", "--env-file", root+"/private/cloud.env", "-f", root+"/src/server/deploy/compose.yaml"]
+    compose = ["sudo", "-n", "docker", "compose", "--env-file", root+"/private/cloud.env", "-f", root+"/deploy/compose.yaml"]
     clients = [Client(args.url, args.ca) for _ in range(3)]
     accounts = []
     suffix = secrets.token_hex(5)

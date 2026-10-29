@@ -8,6 +8,10 @@
 
 模型调用和意识资料保存在独立 [Agent 节点](https://github.com/NingCold/llm-nest-agent)。服务负责节点配对、任务与来源权限、约定到期和自动调用次数，并转发在线记忆和摘要操作；群里的原文也能按权限带回私聊继续讨论。完整接口见 [API](../docs/design/api.md)，后续范围见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
 
+## 部署镜像
+
+发布包先校验 SHA256SUMS 并用 `docker load --input llmn-server-image.tar.gz` 加载，再在私有 Compose 环境中设置固定 `CLOUD_SERVER_IMAGE`。应用使用 `pull_policy: never`，不会自行拉取或构建同名镜像。源码部署先用 `prepare-cloud-context.py` 准备核验过的 Web/服务端构建目录，再 `docker build --tag` 为显式本机镜像，填写同一变量。数据、附件和证书目录沿用，完整命令见[部署说明](deploy/README.md)。
+
 ## 启动
 
 私聊、群聊、附件和 AI 资料可用密文保存，服务保管公开设备信息、密钥投递和加密恢复资料，不保管解密秘密。旧聊天可由有权客户端转换，保留作者、顺序和来源关系；客户端从恢复文件重新核对完整历史后才完成。部署时可开启 `CLOUD_REQUIRE_ENCRYPTION`，拒绝旧客户端发送明文；切换前须完成备份和资料准备。详见[加密契约](../docs/design/crypto-contract.md)，联调见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
