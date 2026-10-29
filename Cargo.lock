@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "cloud-server"
-version = "0.1.1-alpha.11"
+version = "0.1.1-alpha.12"
 dependencies = [
  "argon2",
  "axum",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "connector"
-version = "0.1.1-alpha.11"
+version = "0.1.1-alpha.12"
 dependencies = [
  "futures-util",
  "native-tls",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "social"
-version = "0.1.1-alpha.11"
+version = "0.1.1-alpha.12"
 dependencies = [
  "chrono",
  "serde",

@@ -34,5 +34,18 @@ class TagTests(unittest.TestCase):
         self.assertEqual(git.call_count, 1)
         self.assertEqual(git.call_args.args[0][1], "rev-parse")
 
+class MigrationTests(unittest.TestCase):
+    def test_deployed_migrations_match(self):
+        release.validate_migrations()
+
+    def test_checkout_line_ending_conversion_is_rejected(self):
+        original = Path.read_bytes
+        def normalized(path):
+            data = original(path)
+            return data.replace(b"\r\n", b"\n") if path.name == "0002_chat.sql" else data
+        with patch.object(Path, "read_bytes", normalized):
+            with self.assertRaisesRegex(ValueError, "0002_chat.sql"):
+                release.validate_migrations()
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 """Validate the server version and immutable migration before preparing a release."""
 import argparse
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 import tomllib
@@ -13,14 +14,20 @@ def validate_tag(version, tag, root=ROOT):
     if tagged != head:
         raise ValueError("Checkout does not match the requested release tag")
 
+def validate_migrations():
+    expected = json.loads((ROOT / "scripts/migration-checksums.json").read_text(encoding="utf-8"))
+    for name, checksum in expected.items():
+        actual = hashlib.sha384((ROOT / "server/migrations" / name).read_bytes()).hexdigest()
+        if actual != checksum:
+            raise ValueError(f"Deployed migration bytes changed: {name}")
+
 def validate(tag=None):
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
     assert set(workspace["members"]) == {"server", "connector", "crates/social"}
     for member in workspace["members"]:
         package = tomllib.loads((ROOT / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]
         assert package["version"] == {"workspace": True}
-    digest = hashlib.sha256((ROOT / "server/migrations/0008_migration.sql").read_bytes()).hexdigest().upper()
-    assert digest == "E7E0726E1BB5B5ED3F3349E0971E13C645C8AF0354F88793B9760C7A52074175", "Deployed migration changed"
+    validate_migrations()
     if tag is not None:
         validate_tag(workspace["package"]["version"], tag)
     print("Server release inputs OK: " + workspace["package"]["version"])

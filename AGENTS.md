@@ -4,7 +4,7 @@
 
 本仓 workspace 只有 server、connector 和 crates/social。云端不依赖 Agent、模型、SQLite 或客户端；connector 与 social 不依赖服务端数据库和实现。公开协议由本仓维护，消费者固定同一 Git 提交和锁文件。接口或 DTO 变更同时核对 Web、桌面和 Agent 链路，不能复制业务实现。
 
-权限、来源、消息修订、节点绑定和材料版本在开始及提交边界复核。已开始但结果不明的模型调用不得自动重做。加密失败不回退明文；保留 v4、sealedV1 和已有数据身份。迁移只读旧库、先备份预览；`server/migrations/0008_migration.sql` 精确字节不可改写，SHA-256 为 E7E0726E1BB5B5ED3F3349E0971E13C645C8AF0354F88793B9760C7A52074175。
+权限、来源、消息修订、节点绑定和材料版本在开始及提交边界复核。已开始但结果不明的模型调用不得自动重做。加密失败不回退明文；保留 v4、sealedV1 和已有数据身份。迁移只读旧库、先备份预览；全部已部署 SQL 以 `scripts/migration-checksums.json` 核对原始字节，禁止换行转换。`server/migrations/0008_migration.sql` 精确字节不可改写，SHA-256 为 E7E0726E1BB5B5ED3F3349E0971E13C645C8AF0354F88793B9760C7A52074175。
 
 只在外部输入、存储事务、权限和协议边界校验。内部直接使用成立的类型与不变量，不吞错、重复校验或添加假设性备用路径。持久状态成功后才能更新内存与显示成功。
 
