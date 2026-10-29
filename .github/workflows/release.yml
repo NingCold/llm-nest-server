@@ -1,7 +1,11 @@
-name: Prepare server image
+name: Server release draft
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: Existing v<server version> tag to build and draft
+        required: true
+        type: string
       web_version:
         description: Exact client Web version
         required: true
@@ -13,6 +17,14 @@ on:
         required: true
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: server-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
 jobs:
   image:
     runs-on: ubuntu-24.04
@@ -24,22 +36,33 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ format('refs/tags/{0}', inputs.release_tag) }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Verify existing tag and version
+        run: |
+          python scripts/test_release.py
+          python scripts/release.py validate --tag "$RELEASE_TAG"
       - name: Prepare fixed inputs
         run: |
           rustup toolchain install 1.99.1 --profile minimal
-          python scripts/release.py validate
           cargo fetch --locked
+          curl --fail --location --proto '=https' https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-unknown-linux-musl.tar.gz --output cargo-about.tar.gz
+          echo '3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4  cargo-about.tar.gz' | sha256sum --check
+          mkdir cargo-about-bin
+          tar -xzf cargo-about.tar.gz --strip-components=1 -C cargo-about-bin
           mkdir artifact
+          ./cargo-about-bin/cargo-about generate --manifest-path server/Cargo.toml --target x86_64-unknown-linux-gnu --locked --fail --config scripts/licenses/about.toml --output-file artifact/THIRD-PARTY-NOTICES.txt scripts/licenses/notices.hbs
           curl --fail --location --proto '=https' "$WEB_URL" --output artifact/web.tar.gz
           curl --fail --location --proto '=https' "$WEB_MANIFEST_URL" --output artifact/web-manifest.json
-          python scripts/prepare-cloud-context.py --web-artifact artifact/web.tar.gz --web-manifest artifact/web-manifest.json --web-version "$WEB_VERSION" --output artifact/context
+          python scripts/prepare-cloud-context.py --web-artifact artifact/web.tar.gz --web-manifest artifact/web-manifest.json --web-version "$WEB_VERSION" --third-party-notices artifact/THIRD-PARTY-NOTICES.txt --output artifact/context
       - name: Build image and save checksums
         run: |
-          docker build --tag llmn-server:review artifact/context
-          docker image inspect llmn-server:review > artifact/image-manifest.json
-          docker save llmn-server:review | gzip > artifact/llmn-server-image.tar.gz
-          sha256sum artifact/llmn-server-image.tar.gz > artifact/SHA256SUMS
+          docker build --tag llmn-server:"$RELEASE_TAG" artifact/context
+          docker image inspect llmn-server:"$RELEASE_TAG" > artifact/image-manifest.json
+          docker save llmn-server:"$RELEASE_TAG" | gzip > artifact/llmn-server-image.tar.gz
+          cp LICENSE NOTICE artifact/
+          (cd artifact && sha256sum llmn-server-image.tar.gz image-manifest.json web-manifest.json THIRD-PARTY-NOTICES.txt LICENSE NOTICE > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: server-image-review
@@ -47,4 +70,41 @@ jobs:
             artifact/llmn-server-image.tar.gz
             artifact/image-manifest.json
             artifact/web-manifest.json
+            artifact/THIRD-PARTY-NOTICES.txt
             artifact/SHA256SUMS
+            artifact/LICENSE
+            artifact/NOTICE
+
+  draft-release:
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: server-image-review
+          path: release-assets
+      - name: Create or update draft for the verified existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          LLM-Nest Server 镜像与固定 Web 组合。
+
+          包含镜像 tar.gz、image/web manifests、第三方许可证、LICENSE、NOTICE 与 SHA256SUMS。
+          维护者请核对兼容组合和部署验收后手动公开；此流程不创建 tag，不自动部署或公开 Release。
+          NOTES
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > is-draft.txt 2>/dev/null; then
+            if [[ "$(cat is-draft.txt)" != true ]]; then
+              echo 'Refusing to replace an already published Release.' >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag --draft "${flags[@]}" --title "LLM-Nest Server $RELEASE_TAG" --notes-file release-notes.md
+          fi

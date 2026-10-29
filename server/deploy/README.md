@@ -7,8 +7,11 @@
 服务器需要 Docker Compose。客户端先构建 Web，再将明确版本的静态产物和 SHA-256 清单交给服务端。Docker 不直接读取客户端目录，也不编译 Agent。
 
 ```sh
-python scripts/prepare-cloud-context.py --web-artifact /path/to/web-artifact/llmn-web-0.1.1-alpha.11.tar.gz --web-manifest /path/to/web-artifact/web-manifest.json --web-version 0.1.1-alpha.11 --output /path/to/cloud-context
+cargo about generate --manifest-path server/Cargo.toml --target x86_64-unknown-linux-gnu --locked --fail --config scripts/licenses/about.toml --output-file /path/to/THIRD-PARTY-NOTICES.txt scripts/licenses/notices.hbs
+python scripts/prepare-cloud-context.py --third-party-notices /path/to/THIRD-PARTY-NOTICES.txt --web-artifact /path/to/web-artifact/llmn-web-0.1.1-alpha.11.tar.gz --web-manifest /path/to/web-artifact/web-manifest.json --web-version 0.1.1-alpha.11 --output /path/to/cloud-context
 ```
+
+使用 cargo-about 0.9.3 生成 Rust 依赖声明；发布工作流从官方固定版本下载并核验 SHA-256，不现场编译此工具。生成过程允许联网取得上游准确许可证文本，不能改用离线标准文本代替。镜像在 `/usr/share/doc/llmn-server/` 随附根 LICENSE、NOTICE 与 `THIRD-PARTY-NOTICES.txt`；Web 自带的许可证声明保留在 Web 产物中，Debian 运行库的 copyright 文件仍在 `/usr/share/doc/`。
 
 版本参数选择实际构建的客户端版本。打包目录与构建上下文必须为空，不会覆盖旧包。上下文创建时验证版本、摘要和归档路径，只加入 `server`、`connector`、`crates/social` 的受 Git 跟踪文件，并用 `cargo update --workspace --offline` 从现有锁文件收敛最小工作区，核对依赖版本保持固定；需要本机已有对应 Cargo 索引缓存。将生成的上下文复制到构建机器，在部署环境设置 `CLOUD_BUILD_CONTEXT` 为其绝对路径。上下文包含固定 Web 清单，不含个人配置、模型密钥或聊天库。服务端、Web 和 Agent 的版本可以独立选择；部署时保留实际兼容组合及摘要，不用 `latest` 代替产物版本。
 

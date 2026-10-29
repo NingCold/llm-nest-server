@@ -10,6 +10,7 @@ RUN cargo build --release --locked -p cloud-server
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3
 COPY --from=build /src/target/release/cloud-server /usr/local/bin/cloud-server
+COPY LICENSE NOTICE THIRD-PARTY-NOTICES.txt /usr/share/doc/llmn-server/
 COPY web /app/web
 COPY web-manifest.json /app/web-manifest.json
 ENV CLOUD_BIND=0.0.0.0:8787 CLOUD_WEB_DIR=/app/web CLOUD_ATTACHMENTS_DIR=/data/attachments

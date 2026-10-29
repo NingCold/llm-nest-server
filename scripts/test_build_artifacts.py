@@ -34,6 +34,8 @@ class ArtifactTests(unittest.TestCase):
     def test_archive_path_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            notices = root / 'notices.txt'
+            notices.write_text('Fixture dependency license text')
             for name in ('../escape', 'C:/escape', '/escape'):
                 artifact = root / 'web.tar.gz'
                 with tarfile.open(artifact, 'w:gz') as tar:
@@ -43,15 +45,19 @@ class ArtifactTests(unittest.TestCase):
                 manifest = root / 'manifest.json'
                 manifest.write_text(json.dumps({'schemaVersion': 1, 'webVersion': '1.2.3', 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}))
                 with self.assertRaisesRegex(ValueError, 'unsafe path'):
-                    cloud.create(root / 'out', artifact, manifest, '1.2.3', lock=False)
+                    cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
                 self.assertFalse((root / 'out').exists())
 
     def test_context_lock_resolution_keeps_existing_dependency_versions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            notices = root / 'notices.txt'
+            notices.write_text('Fixture dependency license text')
             repo = root / 'repository'
             repo.mkdir()
             (repo / 'Cargo.toml').write_text('[workspace.package]\nversion="1.2.3"\nedition="2024"\n[workspace.dependencies]\n')
+            (repo / 'LICENSE').write_text('Fixture project license')
+            (repo / 'NOTICE').write_text('Fixture project notice')
             (repo / 'Cargo.lock').write_text('[[package]]\nname="fixture"\nversion="1.2.3"\n')
             for member in cloud.MEMBERS:
                 package = repo / member
@@ -66,28 +72,33 @@ class ArtifactTests(unittest.TestCase):
             def keep_lock(command, **kwargs):
                 self.assertEqual(command, ['cargo', 'update', '--workspace', '--offline'])
             with patch.object(cloud.subprocess, 'check_output', return_value=b''), patch.object(cloud.subprocess, 'run', side_effect=keep_lock):
-                cloud.create(root / 'same-lock', artifact, manifest, '1.2.3', root=repo)
+                cloud.create(root / 'same-lock', artifact, manifest, '1.2.3', notices, root=repo)
             def change_lock(command, **kwargs):
                 self.assertEqual(command, ['cargo', 'update', '--workspace', '--offline'])
                 self.assertEqual(kwargs['cwd'], root / 'changed-lock')
                 (kwargs['cwd'] / 'Cargo.lock').write_text('[[package]]\nname="unexpected"\nversion="99.0.0"\n')
             with patch.object(cloud.subprocess, 'check_output', return_value=b''), patch.object(cloud.subprocess, 'run', side_effect=change_lock):
                 with self.assertRaisesRegex(ValueError, 'changed pinned dependencies'):
-                    cloud.create(root / 'changed-lock', artifact, manifest, '1.2.3', root=repo)
+                    cloud.create(root / 'changed-lock', artifact, manifest, '1.2.3', notices, root=repo)
             self.assertIn('name="fixture"', (repo / 'Cargo.lock').read_text())
 
     def test_web_digest_version_and_context_boundaries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            notices = root / 'notices.txt'
+            notices.write_text('Fixture dependency license text')
             dist = root / 'dist'
             dist.mkdir()
             (dist / 'index.html').write_text('fixture')
             artifact = web.package(dist, root / 'artifact', '1.2.3')
             manifest = artifact.parent / 'web-manifest.json'
             with self.assertRaisesRegex(ValueError, 'version mismatch'):
-                cloud.create(root / 'bad', artifact, manifest, '2.0.0', lock=False)
-            context = cloud.create(root / 'context', artifact, manifest, '1.2.3', lock=False)
+                cloud.create(root / 'bad', artifact, manifest, '2.0.0', notices, lock=False)
+            context = cloud.create(root / 'context', artifact, manifest, '1.2.3', notices, lock=False)
             self.assertTrue((context / 'web/index.html').is_file())
+            self.assertEqual((context / 'LICENSE').read_bytes(), (cloud.ROOT / 'LICENSE').read_bytes())
+            self.assertEqual((context / 'NOTICE').read_bytes(), (cloud.ROOT / 'NOTICE').read_bytes())
+            self.assertEqual((context / 'THIRD-PARTY-NOTICES.txt').read_bytes(), notices.read_bytes())
             self.assertFalse((context / 'agent').exists())
             self.assertFalse((context / 'client').exists())
             self.assertFalse((context / 'crates/runtime').exists())
@@ -96,7 +107,7 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(workspace['members'], list(cloud.MEMBERS))
             artifact.write_bytes(b'tampered')
             with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
-                cloud.create(root / 'tampered', artifact, manifest, '1.2.3', lock=False)
+                cloud.create(root / 'tampered', artifact, manifest, '1.2.3', notices, lock=False)
 
 
 if __name__ == '__main__':

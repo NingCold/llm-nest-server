@@ -20,7 +20,7 @@ def toml_value(value):
     return json.dumps(value)
 
 
-def create(output, web, manifest_path, version, root=ROOT, lock=True):
+def create(output, web, manifest_path, version, notices, root=ROOT, lock=True):
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     if not version or version == 'latest' or manifest.get('schemaVersion') != 1 or manifest.get('webVersion') != version:
         raise ValueError('Web artifact version mismatch')
@@ -66,6 +66,9 @@ def create(output, web, manifest_path, version, root=ROOT, lock=True):
     shutil.copy2(root / 'Cargo.lock', output / 'Cargo.lock')
     shutil.copy2(root / 'server/Dockerfile', output / 'Dockerfile')
     shutil.copy2(manifest_path, output / 'web-manifest.json')
+    shutil.copy2(root / 'LICENSE', output / 'LICENSE')
+    shutil.copy2(root / 'NOTICE', output / 'NOTICE')
+    shutil.copy2(notices, output / 'THIRD-PARTY-NOTICES.txt')
     if lock:
         # Converge workspace members offline without fetching dependency source archives.
         # Pruning workspace members may rewrite the lock, but dependency versions must stay pinned.
@@ -85,5 +88,6 @@ if __name__ == '__main__':
     p.add_argument('--web-artifact', type=Path, required=True)
     p.add_argument('--web-manifest', type=Path, required=True)
     p.add_argument('--web-version', required=True)
+    p.add_argument('--third-party-notices', type=Path, required=True, help='cargo-about generated Rust dependency notices')
     a = p.parse_args()
-    print(create(a.output, a.web_artifact, a.web_manifest, a.web_version))
+    print(create(a.output, a.web_artifact, a.web_manifest, a.web_version, a.third_party_notices))

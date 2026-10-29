@@ -9,6 +9,6 @@ LLM-Nest 的云端服务，负责真人与 AI 账号、联系人和群权限、�
 - [接口与设计](docs/design/README.md)、[旧资料迁移](docs/migration.md)。
 - [客户端与产品使用](https://github.com/NingCold/llm-nest)、[Agent](https://github.com/NingCold/llm-nest-agent)。
 
-当前为本地拆仓结果，新服务端与 Agent 远端尚未发布；跨仓链接表示计划中的归属，不能视为已经可以下载的发布地址。源码许可尚待维护者明确，不新增许可承诺。
+服务端与 Agent 已有独立公开仓库；固定版本产物见各仓 Releases，构建和部署方法见上面的指南。
 
 项目代码采用 [Apache-2.0](LICENSE) 许可证；第三方组件保留各自的许可证和声明。
