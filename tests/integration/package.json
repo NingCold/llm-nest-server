@@ -1,0 +1,11 @@
+{
+  "name": "llmn-server-integration",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-wasm": "18.9.0",
+    "@noble/curves": "2.4.0",
+    "fake-indexeddb": "6.2.5",
+    "fflate": "0.8.2"
+  }
+}

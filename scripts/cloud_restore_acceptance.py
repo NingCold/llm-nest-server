@@ -27,7 +27,7 @@ root = Path(sys.argv[1])
 if not root.is_absolute() or root.resolve() != root:
     raise SystemExit("FAIL: server-root must be an absolute resolved path")
 compose = ["docker", "compose", "--env-file", str(root / "private/cloud.env"),
-           "-f", str(root / "src/server/cloud/deploy/compose.yaml")]
+           "-f", str(root / "src/server/deploy/compose.yaml")]
 
 def run(args, *, data=None, output=None, label="remote command"):
     result = subprocess.run(args, input=data, stdout=output or subprocess.PIPE,

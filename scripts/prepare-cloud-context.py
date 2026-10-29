@@ -9,7 +9,7 @@ import tarfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-MEMBERS = ('server/cloud', 'connector', 'crates/social')
+MEMBERS = ('server', 'connector', 'crates/social')
 
 
 def toml_value(value):
@@ -64,7 +64,7 @@ def create(output, web, manifest_path, version, root=ROOT, lock=True):
     text += ''.join(f'{json.dumps(k)} = {toml_value(workspace["dependencies"][k])}\n' for k in sorted(names))
     (output / 'Cargo.toml').write_text(text, encoding='utf-8')
     shutil.copy2(root / 'Cargo.lock', output / 'Cargo.lock')
-    shutil.copy2(root / 'server/cloud/Dockerfile', output / 'Dockerfile')
+    shutil.copy2(root / 'server/Dockerfile', output / 'Dockerfile')
     shutil.copy2(manifest_path, output / 'web-manifest.json')
     if lock:
         # Converge workspace members offline without fetching dependency source archives.

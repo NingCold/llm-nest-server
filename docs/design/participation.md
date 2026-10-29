@@ -1,6 +1,6 @@
 # 参与与调度
 
-[总纲](overview.md) · [聊天与消息](conversations.md) · [AI 执行](execution.md)
+[总纲](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md) · [聊天与消息](conversations.md) · [AI 执行](https://github.com/NingCold/llm-nest-agent/blob/main/docs/design/execution.md)
 
 ## 当前云端接话与约定
 
@@ -12,7 +12,7 @@
 
 ## 云端与节点分工
 
-[云端计划](../project/cloud-plan.md)确定云端管发言资格、节点管模型调用。社交资格、模型预算和独立节点生命周期分别按下述规则维护。
+[云端计划](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md)确定云端管发言资格、节点管模型调用。社交资格、模型预算和独立节点生命周期分别按下述规则维护。
 
 ### 社交调度与模型调度
 
@@ -36,6 +36,6 @@
 
 一次性约定仍由真人在窗口独立授权并明确创建，内容不可原地修改；免打扰只影响约定，延后/跳过、暂停、停用、屏蔽、退群和过期沿用现有语义。云端保存 UTC 到期/失效时点并在领取、开始和最终提交复核；不伪造真人消息，成功一次不继续自动接话。摘要完成、临时 delta 和失败片段均不触发新接话。
 
-节点离线时云端继续保存消息；在线后重新检查尚未开始、仍授权且未过期的任务，过期联系不补发。开始已获确认但结果不明的调用不自动重做，已完成结果按原 ID 查询/重交仍须通过当前授权、来源和绑定检查。云端取消立即撤销提交资格并通知节点尽力停止，断线不能保证模型立即停止或费用撤回。详见[执行契约](execution.md)与[节点协议](api.md)。
+节点离线时云端继续保存消息；在线后重新检查尚未开始、仍授权且未过期的任务，过期联系不补发。开始已获确认但结果不明的调用不自动重做，已完成结果按原 ID 查询/重交仍须通过当前授权、来源和绑定检查。云端取消立即撤销提交资格并通知节点尽力停止，断线不能保证模型立即停止或费用撤回。详见[执行契约](https://github.com/NingCold/llm-nest-agent/blob/main/docs/design/execution.md)与[节点协议](api.md)。
 
 客户端关闭不结束云端调度或独立 Agent。本机睡眠/关机则节点离线；桌面已提供本机运行、首次关闭说明和托盘停止入口。当前不提供系统唤醒、离线推送或重复日程。

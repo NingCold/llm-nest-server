@@ -8,8 +8,17 @@ const { createRequire } = require('node:module');
 const { randomUUID, webcrypto, createHash } = require('node:crypto');
 const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
-const webRequire = createRequire(path.join(root, 'client/web/package.json'));
-const ts = webRequire('typescript');
+const webRequire = createRequire(path.join(root, 'tests/integration/package.json'));
+if (!process.env.LLMN_CLIENT_CRYPTO_FIXTURE) throw Error('LLMN_CLIENT_CRYPTO_FIXTURE must specify the compiled client test artifact');
+const fixture = path.resolve(process.env.LLMN_CLIENT_CRYPTO_FIXTURE);
+const manifest = JSON.parse(fs.readFileSync(path.join(fixture, 'manifest.json'), 'utf8'));
+assert.equal(manifest.schemaVersion, 1);
+assert.equal(manifest.clientVersion, process.env.LLMN_CLIENT_VERSION, 'explicit client artifact version must match');
+for (const [name, digest] of Object.entries(manifest.files)) {
+  const file = path.resolve(fixture, name);
+  assert(file.startsWith(fixture + path.sep), 'fixture entry leaves artifact directory');
+  assert.equal(createHash('sha256').update(fs.readFileSync(file)).digest('hex'), digest, `fixture digest: ${name}`);
+}
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 exports.run = async c => {
@@ -66,12 +75,13 @@ exports.run = async c => {
   };
   function load(file) {
     const absolute = path.resolve(file);
-    if (absolute === path.join(root, 'client/web/src/cloud/api.ts')) return api;
+    if (absolute === path.join(fixture, 'api.cjs')) return api;
     if (modules.has(absolute)) return modules.get(absolute);
     const result = {}; modules.set(absolute, result);
+    const name = path.relative(fixture, absolute).split(path.sep).join('/');
+    assert(Object.hasOwn(manifest.files, name), `module absent from fixture manifest: ${name}`);
     const source = fs.readFileSync(absolute, 'utf8');
-    const seed = absolute.endsWith(path.join('crypto', 'engine.ts')) ? '\nexports.seed = state => { active = { sdk: state.sdk, machine: state.machine, account: state.account, owner: ownerOf(state.account), deviceId: state.device, cursor: state.cursor }; };' : '';
-    vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText + seed, {
+    vm.runInNewContext(source, {
       exports: result, crypto: webcrypto, indexedDB: webRequire('fake-indexeddb').indexedDB, TextEncoder, TextDecoder, Uint8Array, Map, Blob, atob, btoa, Event, CustomEvent,
       localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) }, window: { dispatchEvent() {} },
       // This fixture's only image is a known 1x1 PNG. Assert its recovered bytes before emulating browser image dimensions.
@@ -80,15 +90,15 @@ exports.run = async c => {
         if (name === '@tauri-apps/api/core') return { invoke: () => { throw Error('fixture must not use native transport'); } };
         if (!name.startsWith('.')) return webRequire(name);
         const target = path.resolve(path.dirname(absolute), name);
-        return load(fs.existsSync(target + '.ts') ? target + '.ts' : target + '.tsx');
+        return load(target.endsWith('.cjs') ? target : target + '.cjs');
       },
     });
     return result;
   }
-  const engine = load(path.join(root, 'client/web/src/cloud/crypto/engine.ts'));
-  const migration = load(path.join(root, 'client/web/src/cloud/crypto/migration.ts'));
-  const content = load(path.join(root, 'client/web/src/cloud/crypto/content.ts'));
-  const attachments = load(path.join(root, 'client/web/src/cloud/crypto/attachments.ts'));
+  const engine = load(path.join(fixture, 'crypto/engine.cjs'));
+  const migration = load(path.join(fixture, 'crypto/migration.cjs'));
+  const content = load(path.join(fixture, 'crypto/content.cjs'));
+  const attachments = load(path.join(fixture, 'crypto/attachments.cjs'));
   engine.seed({ ...a, sdk });
   try {
     const file = await engine.createRecoveryFile(); await engine.commitRecoveryFile(file);

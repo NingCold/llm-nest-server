@@ -12,14 +12,18 @@ const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
 const { connect } = require('node:net');
 const root = path.resolve(__dirname, '..');
-const webRequire = createRequire(path.join(root, 'client/web/package.json'));
+const webRequire = createRequire(path.join(root, 'tests/integration/package.json'));
 const sdk = webRequire('@matrix-org/matrix-sdk-crypto-wasm');
 const { ed25519 } = webRequire('@noble/curves/ed25519.js');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const directory = path.join(root, 'target', `crypto-acceptance-${randomUUID()}`);
 fs.mkdirSync(directory, { recursive: true });
 const origin = 'http://127.0.0.1:18789';
-const executable = path.join(root, 'target/debug', process.platform === 'win32' ? 'cloud-server.exe' : 'cloud-server');
+function input(name) { if (!process.env[name]) throw Error(`${name} must specify an explicit artifact path`); return path.resolve(process.env[name]); }
+const executable = input('LLMN_CLOUD_BINARY');
+const agentBinary = input('LLMN_AGENT_BINARY');
+const interopBinary = input('LLMN_INTEROP_BINARY');
+const webDirectory = input('LLMN_WEB_DIR');
 const database = `crypto_acceptance_${randomUUID().replaceAll('-', '')}`;
 const base = new URL(process.env.CLOUD_TEST_DATABASE_URL);
 const sqlEnv = { ...process.env, PGHOST: base.hostname, PGPORT: base.port || '5432', PGUSER: decodeURIComponent(base.username), PGPASSWORD: decodeURIComponent(base.password), PGDATABASE: base.pathname.slice(1) };
@@ -30,7 +34,7 @@ function sql(statement, db = database) {
 }
 sql(`CREATE DATABASE "${database}"`, sqlEnv.PGDATABASE);
 base.pathname = `/${database}`;
-const env = { ...process.env, CLOUD_DATABASE_URL: base.toString(), CLOUD_PUBLIC_URL: origin, CLOUD_BIND: '127.0.0.1:18789', CLOUD_ATTACHMENTS_DIR: path.join(directory, 'attachments'), CLOUD_MAIL_OUTBOX: path.join(directory, 'mail'), CLOUD_WEB_DIR: path.join(root, 'client/web/dist') };
+const env = { ...process.env, CLOUD_DATABASE_URL: base.toString(), CLOUD_PUBLIC_URL: origin, CLOUD_BIND: '127.0.0.1:18789', CLOUD_ATTACHMENTS_DIR: path.join(directory, 'attachments'), CLOUD_MAIL_OUTBOX: path.join(directory, 'mail'), CLOUD_WEB_DIR: webDirectory };
 const log = fs.openSync(path.join(directory, 'server.log'), 'w');
 let server = spawn(executable, [], { env, windowsHide: true, stdio: ['ignore', log, log] });
 const children = [];
@@ -160,7 +164,7 @@ async function setRequireEncryption(enabled) {
 }
 async function agentFlow(human, other) {
   phase = 'Agent enrollment and recovery setup';
-  const agent = path.join(root, 'target/debug', process.platform === 'win32' ? 'llmn-agent.exe' : 'llmn-agent');
+  const agent = agentBinary;
   const agentEnv = { ...env, LLMN_E2EE_TEST_KEY: 'mock-provider-only' };
   const modelInputs = [];
   let cloudReplyHold;
@@ -531,7 +535,7 @@ async function main() {
   const rustRecovery = sdk.Attachment.encrypt(Buffer.from(JSON.stringify((await a.machine.exportSecretsBundle()).to_json())));
   const inputPath = path.join(directory, 'interop-input.private.json'), outputPath = path.join(directory, 'interop-output.private.json');
   fs.writeFileSync(inputPath, JSON.stringify({ account: a.account, mediaEncryptionInfo: rustRecovery.mediaEncryptionInfo, recoveryCiphertext: Array.from(rustRecovery.encryptedData), roomKeys: JSON.parse(await a.machine.exportRoomKeys(() => true)), sealed, expected: inner }));
-  const interop = spawnSync(path.join(root, 'target/debug/examples', process.platform === 'win32' ? 'interop.exe' : 'interop'), [inputPath, outputPath], { windowsHide: true, encoding: 'utf8' });
+  const interop = spawnSync(interopBinary, [inputPath, outputPath], { windowsHide: true, encoding: 'utf8' });
   assert.equal(interop.status, 0, `Rust SDK interop failed: ${interop.stderr}`);
   const rust = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
   await a.machine.importExportedRoomKeys(JSON.stringify(rust.roomKeys), () => {});

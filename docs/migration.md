@@ -39,7 +39,7 @@ python scripts/migrate_local.py node-packages --directory <迁移目录>
 llmn-agent export-ai <原节点目录> <AI账号ID> <新的资料包.json>
 ```
 
-在新设备按[节点说明](../agent/node/README.md)配置模型和密钥，再为同一个 AI 重新配对。账号和云端聊天继续沿用，旧节点的授权失效。将资料包复制到新设备的私有目录，运行：
+在新设备按[节点说明](https://github.com/NingCold/llm-nest-agent/blob/main/node/README.md)配置模型和密钥，再为同一个 AI 重新配对。账号和云端聊天继续沿用，旧节点的授权失效。将资料包复制到新设备的私有目录，运行：
 
 ```text
 llmn-agent preview-import-ai <新节点目录> <AI账号ID> <资料包.json>
@@ -53,7 +53,7 @@ llmn-agent run <新节点目录>
 
 ## 验证工具
 
-`python scripts/test_migrate_local.py` 使用临时旧库检查备份和转换，v13 SQL 夹具位于 `server/cloud/tests/fixtures/local-v13`。旧宿主已移除，迁移工具继续独立读取旧库。完整的云端迁移、更换节点、备份恢复运行方法见[验证指南](validation/README.md#数据迁移与联网试用验证)，测试都使用专用账号和模拟模型。
+`python scripts/test_migrate_local.py` 使用临时旧库检查备份和转换，v13 SQL 夹具位于 `server/tests/fixtures/local-v13`。旧宿主已移除，迁移工具继续独立读取旧库。完整的云端迁移、更换节点、备份恢复运行方法见[验证指南](https://github.com/NingCold/llm-nest/blob/main/docs/validation/README.md#数据迁移与联网试用验证)，测试都使用专用账号和模拟模型。
 
 ## 现有云端记录转为加密
 

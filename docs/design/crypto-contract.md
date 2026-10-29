@@ -1,6 +1,6 @@
 # 聊天与 AI 资料的加密约定
 
-[加密设计](encryption.md) · [执行计划](../project/secure-local-plan.md)
+[加密设计](https://github.com/NingCold/llm-nest/blob/main/docs/design/encryption.md) · [执行计划](https://github.com/NingCold/llm-nest/blob/main/docs/project/secure-local-plan.md)
 
 本文记录私聊、群聊及 AI 资料使用的共同协议。完成状态以进度与验证记录为准。
 

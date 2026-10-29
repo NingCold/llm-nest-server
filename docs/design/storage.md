@@ -1,12 +1,12 @@
 # 存储与迁移
 
-[总纲](overview.md) · [聊天与消息](conversations.md) · [API 与事件](api.md)
+[总纲](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md) · [聊天与消息](conversations.md) · [API 与事件](api.md)
 
-私聊和群聊可显式启用 sealedV1：新消息以密文封装保存，角色、模型、记忆和每 AI 摘要以分范围密文资源 CAS 同步；节点仍保存解密后的执行资料。设备公开密钥、Olm 信箱、恢复密文及版本元数据保存在云端，SDK 秘密与恢复解密材料不上传。旧未启用窗口和未转换历史仍保存明文。历史转换通过独立清单与指纹回执保留原记录标识，附件先写新密文目录再切换索引，旧附件留作受限备份；完成后 `crypto_history_complete` 不再允许旧位置明文。接口见[加密契约](crypto-contract.md)，联调见[当前安排](../project/current.md)。
+私聊和群聊可显式启用 sealedV1：新消息以密文封装保存，角色、模型、记忆和每 AI 摘要以分范围密文资源 CAS 同步；节点仍保存解密后的执行资料。设备公开密钥、Olm 信箱、恢复密文及版本元数据保存在云端，SDK 秘密与恢复解密材料不上传。旧未启用窗口和未转换历史仍保存明文。历史转换通过独立清单与指纹回执保留原记录标识，附件先写新密文目录再切换索引，旧附件留作受限备份；完成后 `crypto_history_complete` 不再允许旧位置明文。接口见[加密契约](crypto-contract.md)，联调见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
 
 ## 当前云端存储
 
-`server/cloud` 直接使用 PostgreSQL，不经过旧 SocialStore。`0001_accounts.sql` 保存 accounts、credentials、邀请、待验证注册、会话、密码重置和认证限流；`0002_chat.sql` 保存 cloud_contacts、cloud_conversations、cloud_list、cloud_messages、cloud_receipts、cloud_events。`0003_nodes.sql` 增加 AI 管理员、节点绑定、配对、任务及节点事件；`0004_groups.sql` 增加真实群与成员、结构化提及/回复、多 AI 任务回执、联系人屏蔽及账号启停。启动自动运行顺序迁移，不改写旧迁移。
+`server` 直接使用 PostgreSQL，不经过旧 SocialStore。`0001_accounts.sql` 保存 accounts、credentials、邀请、待验证注册、会话、密码重置和认证限流；`0002_chat.sql` 保存 cloud_contacts、cloud_conversations、cloud_list、cloud_messages、cloud_receipts、cloud_events。`0003_nodes.sql` 增加 AI 管理员、节点绑定、配对、任务及节点事件；`0004_groups.sql` 增加真实群与成员、结构化提及/回复、多 AI 任务回执、联系人屏蔽及账号启停。启动自动运行顺序迁移，不改写旧迁移。
 
 双方 UUID 有序配对和唯一约束保证唯一私聊；群的 kind 为 group，first_id/second_id 均为 null，以 name 和 cloud_members 表达真实群，不使用 AI 账号占位。账号、窗口和消息 ID 均可沿用稳定 UUID。消息 position 是全局交付顺序，个人 read_position 不回退；消息发送、编辑/撤回、列表修改与相关账号的持久事件及回执在同一事务提交。写事务在分配事件 ID 前取得同一 advisory lock，保证可重放游标的提交顺序。init 和历史页的消息/读位置使用一致快照。
 
@@ -20,9 +20,9 @@ cloud_node_tasks 新增 queue_position（唯一 bigserial）与 conversation_rev
 
 cloud_receipts 只保存命令 SHA256 与实体 ID，不重复保存正文或 base64；重复请求返回当前权威状态，旧回执不能恢复撤回内容。密码使用 Argon2 哈希，邀请、验证/重置链接、会话只存校验值和有效性信息。SMTP 秘密属于部署环境。云端保存 AI 社交任务、来源修订、开始/结果指纹与确认 ID、累计草稿及终态、用量报告和节点事件；配对/绑定只保存节点 secret 的哈希。云端没有模型 Key、persona、内部模型参数、记忆或摘要正文。
 
-客户端草稿复用 IndexedDB，owner 包含服务器与实际账号，再按窗口隔离；文字、mentions/replyTo、附件 Blob 和不可变待确认发送命令同事务保存在本机，不是服务器正式历史。刷新不自动发送，未知发送结果只手动重试原 ID/原内容；首次明确拒绝才恢复可编辑草稿，已存在 pending 的后续权限拒绝不能证明旧发送未提交。浏览器来源隔离与桌面会话说明见[界面设计](frontend.md)。
+客户端草稿复用 IndexedDB，owner 包含服务器与实际账号，再按窗口隔离；文字、mentions/replyTo、附件 Blob 和不可变待确认发送命令同事务保存在本机，不是服务器正式历史。刷新不自动发送，未知发送结果只手动重试原 ID/原内容；首次明确拒绝才恢复可编辑草稿，已存在 pending 的后续权限拒绝不能证明旧发送未提交。浏览器来源隔离与桌面会话说明见[界面设计](https://github.com/NingCold/llm-nest/blob/main/docs/design/frontend.md)。
 
-[本地 payload 映射探针](../../server/cloud/tests/fixtures/README.md) 用合成数据和真实共享类型核对 UUID、公开资料、消息相对顺序及图片/文件原字节。旧 per-window sequence 需映射到云端 global position，旧正文 part index 需映射到云端附件索引。该探针只检查样本映射；第 5 步的正式迁移工具另外负责备份、预览、云端导入及节点资料包，范围见下文及[迁移指南](../migration.md)。
+[本地 payload 映射探针](../../server/tests/fixtures/README.md) 用合成数据和真实共享类型核对 UUID、公开资料、消息相对顺序及图片/文件原字节。旧 per-window sequence 需映射到云端 global position，旧正文 part index 需映射到云端附件索引。该探针只检查样本映射；第 5 步的正式迁移工具另外负责备份、预览、云端导入及节点资料包，范围见下文及[迁移指南](../migration.md)。
 
 `0005_consciousness.sql` 在云端增加群话题引用及其来源索引、按稳定 AI 账号补齐的来源变更、节点材料版本和独立摘要调用确认。正式消息只保存 `context_reference` 的 ID、版本和失效标记，不复制群原文；摘要调用表只有来源、配置版本、状态和用量。在线管理请求与响应只经内存转发，不写入上述表或日志。
 
@@ -43,7 +43,7 @@ cloud_receipts 只保存命令 SHA256 与实体 ID，不重复保存正文或 ba
 
 节点的 `conscious_memory`、`conscious_summaries` 和 `conscious_settings` 按 AI/窗口保存记忆、摘要和设置；`conscious_scopes` 保存上下文版本，`conscious_cursors` 保存来源同步位置。写操作回执只存请求编号与指纹，读取不产生回执，避免轮询累积记录。遗忘或来源失效直接清空当前派生正文，回执中没有旧正文可复活。未完成摘要及其调用确认保存在节点，重启收尾而不重复调用。
 
-`node.toml` 保存服务器、nodeId、CA 路径、预算与新绑定的档案模板，provider Key 只允许环境变量引用，解析出的模型 Key 不进入 SQLite。每 AI 档案由本机 profile CLI 或在线管理保存，角色与意识资料可以通过独立资料包迁往新节点。事务与恢复规则见[执行设计](execution.md#当前云端私聊与群聊执行)。只有同一进程收到云端开始接口明确 409 `task_not_ready`/`conversation_busy` 未开始响应时，才在本地事务删除尚无开始回执的 intent，并撤销该次预留的调用数/token，保留日期单调。普通冲突、断线、确认丢失、已开始或重启后的不确定状态均不适用该撤销路径。
+`node.toml` 保存服务器、nodeId、CA 路径、预算与新绑定的档案模板，provider Key 只允许环境变量引用，解析出的模型 Key 不进入 SQLite。每 AI 档案由本机 profile CLI 或在线管理保存，角色与意识资料可以通过独立资料包迁往新节点。事务与恢复规则见[执行设计](https://github.com/NingCold/llm-nest-agent/blob/main/docs/design/execution.md#当前云端私聊与群聊执行)。只有同一进程收到云端开始接口明确 409 `task_not_ready`/`conversation_busy` 未开始响应时，才在本地事务删除尚无开始回执的 intent，并撤销该次预留的调用数/token，保留日期单调。普通冲突、断线、确认丢失、已开始或重启后的不确定状态均不适用该撤销路径。
 
 节点的 `automatic_budget` 按 AI、窗口和 UTC 日记录自动调用的 token 容量，`model_reservations` 将预留与任务关联。开始意图、整体额度和自动额度在同一 SQLite 事务保存；仅当前进程取得明确未开始的队列冲突后，才一起撤销这次预留。已开始、确认丢失和重启后的不确定调用不退还。
 
@@ -75,7 +75,7 @@ Send 先在 SQLite 事务保存真人消息和 queued 回合，再返回确认�
 
 ## 云端与 Agent 的数据归属
 
-[云端改造计划](../project/cloud-plan.md)确定了数据归属。真人/AI 私聊与群聊、成员与角色、屏蔽和 AI 启停、节点绑定/任务、节点意识资料、接话与约定、在线管理及命令行迁移均已接入。
+[云端改造计划](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md)确定了数据归属。真人/AI 私聊与群聊、成员与角色、屏蔽和 AI 启停、节点绑定/任务、节点意识资料、接话与约定、在线管理及命令行迁移均已接入。
 
 ### 数据归属
 
@@ -111,12 +111,12 @@ Send 先在 SQLite 事务保存真人消息和 queued 回合，再返回确认�
 
 ## 本机未发送草稿
 
-客户端 `client/web/src/chat/draft-storage.ts` 使用 IndexedDB，以服务器、实际真人账号和窗口隔离文字、附件 Blob、结构化提及、回复和引用。发送前原子保存完整命令快照与 requestId；未知结果只允许手动重试原请求。成功后清理原快照并保留期间新增输入。恢复完成前不编辑，写入失败和多页面冲突明确显示，不覆盖另一页内容。
+客户端 `web/src/chat/draft-storage.ts` 使用 IndexedDB，以服务器、实际真人账号和窗口隔离文字、附件 Blob、结构化提及、回复和引用。发送前原子保存完整命令快照与 requestId；未知结果只允许手动重试原请求。成功后清理原快照并保留期间新增输入。恢复完成前不编辑，写入失败和多页面冲突明确显示，不覆盖另一页内容。
 
 草稿默认本机明文，不属于 SDK 密钥库、服务端历史、跨端同步或整库备份。清理浏览器/WebView 资料会删除草稿。桌面关闭等待附件读取和 IndexedDB 事务确认；失败保留窗口。
 
 ## 备份、遗忘与回退
 
-旧宿主源码已退役，旧 v13 数据仍由只读迁移工具备份、预览并导入。十三份原 SQL schema 作为 `server/cloud/tests/fixtures/local-v13` 迁移夹具逐字节保留，不改写旧迁移或用户库。旧 JSON/SQLite 不因启动当前客户端自动导入。
+旧宿主源码已退役，旧 v13 数据仍由只读迁移工具备份、预览并导入。十三份原 SQL schema 作为 `server/tests/fixtures/local-v13` 迁移夹具逐字节保留，不改写旧迁移或用户库。旧 JSON/SQLite 不因启动当前客户端自动导入。
 
-遗忘和撤回不自动修改已导出的文件、备份或供应商已接收的内容。数据库和附件必须成套备份；加密身份及恢复材料单独沿用既有保护方式，不能以可再生产物清理规则删除。发布或代码拆仓不触发清库、换身份或数据目录迁移。当前源码与验证状态见[当前安排](../project/current.md)，旧环境验收不替代改动后的重新验证。
+遗忘和撤回不自动修改已导出的文件、备份或供应商已接收的内容。数据库和附件必须成套备份；加密身份及恢复材料单独沿用既有保护方式，不能以可再生产物清理规则删除。发布或代码拆仓不触发清库、换身份或数据目录迁移。当前源码与验证状态见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)，旧环境验收不替代改动后的重新验证。

@@ -1,10 +1,10 @@
 # 身份与关系
 
-[总纲](overview.md) · [聊天与消息](conversations.md) · [运行时与配置](runtime.md)
+[总纲](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md) · [聊天与消息](conversations.md) · [运行时与配置](https://github.com/NingCold/llm-nest-agent/blob/main/docs/design/runtime.md)
 
-账号认证、AI 管理员与节点授权的当前实现以本文为准。聊天加密、可信设备与恢复、AI 资料密文同步已接入，规则见[端到端加密方案](encryption.md)，实现契约见[加密接口](crypto-contract.md)。账号登录不自动取得解密能力，实际验收与部署状态见[当前安排](../project/current.md)。
+账号认证、AI 管理员与节点授权的当前实现以本文为准。聊天加密、可信设备与恢复、AI 资料密文同步已接入，规则见[端到端加密方案](https://github.com/NingCold/llm-nest/blob/main/docs/design/encryption.md)，实现契约见[加密接口](crypto-contract.md)。账号登录不自动取得解密能力，实际验收与部署状态见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
 
-默认入口已提供云端真人账号、邀请注册、邮箱验证、密码登录与找回、资料修改和会话撤销。云端 AI 创建、公开资料编辑、管理员授权、只读账号视角、节点配对/更换/撤销与在线角色/模型配置已接通。进度见[当前工作](../project/current.md)，验证见[验证入口](../validation/README.md)。
+默认入口已提供云端真人账号、邀请注册、邮箱验证、密码登录与找回、资料修改和会话撤销。云端 AI 创建、公开资料编辑、管理员授权、只读账号视角、节点配对/更换/撤销与在线角色/模型配置已接通。进度见[当前工作](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)，验证见[验证入口](https://github.com/NingCold/llm-nest/blob/main/docs/validation/README.md)。
 
 ## 已确认的云端账号方向
 
@@ -24,7 +24,7 @@
 
 节点管理按 AI 管理权限校验，初始管理员和普通管理员均可绑定、更换、撤销；创建者成为初始管理员；只有初始管理员能增删真人管理员，普通管理员不能转授权或修改初始管理员。不提供人工代发。
 
-群权限现采用群主、群管理员和普通成员三级，按账号分配；AI 的管理员不会自动获得该 AI 所在群的管理权。在线角色与模型配置按 AI 管理权授权，窗口记忆和摘要另按成员权限复核。具体权限与共享完整群历史的约定见[聊天与消息](conversations.md#已确认的云端群管理方向)。AI 创建和节点生命周期的进度见[第 2 步](../project/cloud-plan.md#第-2-步接入一个-ai-节点)。
+群权限现采用群主、群管理员和普通成员三级，按账号分配；AI 的管理员不会自动获得该 AI 所在群的管理权。在线角色与模型配置按 AI 管理权授权，窗口记忆和摘要另按成员权限复核。具体权限与共享完整群历史的约定见[聊天与消息](conversations.md#已确认的云端群管理方向)。AI 创建和节点生命周期的进度见[第 2 步](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md#第-2-步接入一个-ai-节点)。
 
 云端公开账号返回 active/disabled 状态。当前 AI 管理员可按 statusRevision 停用或恢复 AI：停用取消该 AI 的未完成任务，保留绑定、群成员和历史，恢复只接受新触发。联系人 listed 与 blocked 独立，移除或重新添加不清除屏蔽；任一方向屏蔽只限制双方私聊，群内正常 @/回复仍可用。公开资料与管理员名单分别使用 profileRevision 和 administratorsRevision 控制并发修改。
 
@@ -36,15 +36,15 @@
 
 一个 AI 同时只有一个有效运行节点，一个节点可以运行多个 AI。该 AI 的管理员手动更换后，旧节点失去执行与发言资格，云端账号与聊天历史沿用。加密节点正常交接先停接新工作、同步资料与历史钥，新节点使用独立恢复材料恢复；旧节点损坏时可明确选择强制更换，接受未同步内容缺失。未加密节点仍使用资料迁移包；单纯重新绑定不能恢复内部资料或解密秘密。
 
-关闭窗口后本机 Agent 默认继续后台运行，具体操作见[界面设计](frontend.md#已确认的云端创建与管理方向)。运行、恢复和迁移遵守[已确认约定](../project/cloud-plan.md#已确认的运行与迁移约定)。真人实际操作者由云端登录会话确定，网页和桌面访问同一云端账号；客户端不得指定任意 operatorId 或借只读 AI 视角获得发言身份。
+关闭窗口后本机 Agent 默认继续后台运行，具体操作见[界面设计](https://github.com/NingCold/llm-nest/blob/main/docs/design/frontend.md#已确认的云端创建与管理方向)。运行、恢复和迁移遵守[已确认约定](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md#已确认的运行与迁移约定)。真人实际操作者由云端登录会话确定，网页和桌面访问同一云端账号；客户端不得指定任意 operatorId 或借只读 AI 视角获得发言身份。
 
-当前真人认证位于 `server/cloud/src/auth.rs`，账号与会话保存在 PostgreSQL；Web 和桌面从登录会话确定实际操作者，不接收客户端自定的 operatorId。Cookie 在浏览器或桌面 Rust 侧保管；节点使用专用 Bearer，配对码十分钟有效，绑定版本和凭据哈希保存在 PostgreSQL，协议见[节点接口](api.md#云端-ai-与节点接口)。
+当前真人认证位于 `server/src/auth.rs`，账号与会话保存在 PostgreSQL；Web 和桌面从登录会话确定实际操作者，不接收客户端自定的 operatorId。Cookie 在浏览器或桌面 Rust 侧保管；节点使用专用 Bearer，配对码十分钟有效，绑定版本和凭据哈希保存在 PostgreSQL，协议见[节点接口](api.md#云端-ai-与节点接口)。
 
 ### 登录会话与本机解锁
 
 登录及邮箱验证页提供“在此设备保持登录 30 天”，默认不勾选。未勾选时，Web 使用会话 Cookie，服务端会话最多有效 8 小时；Windows 桌面仅在进程内保管令牌。勾选后，会话从创建时起绝对有效 30 天，不随使用滑动续期；Web 使用持久 HttpOnly Cookie，Windows 用当前操作系统用户的 DPAPI 保护令牌，网页脚本拿不到原生保存的令牌。退出、服务端撤销或到期后须重新登录。非 Windows 原生端暂不开放保持登录，不能退回明文保存。
 
-保持登录不保存账号密码，也不授予新的聊天解密能力。已有本机设备的 SDK 密钥库仍需独立口令解锁；用户可在手动解锁、设备获可信授权并确认保存恢复文件后，另行开启默认关闭的 30 天自动解锁。Web 与 Windows 支持，非 Windows 原生端暂不可用。新设备仍须已有可信设备授权或使用恢复文件，不能由登录成功或自动解锁设置创建新的信任。保护方式与本机资料边界见[加密方案](encryption.md#本机锁定与自动解锁)。
+保持登录不保存账号密码，也不授予新的聊天解密能力。已有本机设备的 SDK 密钥库仍需独立口令解锁；用户可在手动解锁、设备获可信授权并确认保存恢复文件后，另行开启默认关闭的 30 天自动解锁。Web 与 Windows 支持，非 Windows 原生端暂不可用。新设备仍须已有可信设备授权或使用恢复文件，不能由登录成功或自动解锁设置创建新的信任。保护方式与本机资料边界见[加密方案](https://github.com/NingCold/llm-nest/blob/main/docs/design/encryption.md#本机锁定与自动解锁)。
 
 已有本机设备但尚未解锁时，客户端显示独立锁屏；聊天组件及订阅卸载，不在聊天正文上覆盖模糊层。锁定保留登录账号与导航位置，解锁后恢复使用；恢复文件入口可独立进入。锁定不会停止独立运行的 Agent。退出清理此账号的自动解锁材料并关闭 SDK，但保留 SDK 密钥库供后续手动解锁。
 
@@ -64,4 +64,4 @@
 
 名字和公开简介修改保留稳定账号，旧消息保留发送时的展示信息。更换模型或节点不创建第二个私聊；内部角色、记忆与摘要的接续需要有效资料与来源，单纯重新绑定不会生成丢失内容。开始时复核档案及绑定，普通配置变更只用于新运行；最终提交仍复核当前权限、来源和材料版本。
 
-初始管理员转让和角色复制尚未实现。撤权后所有新管理或只读请求被拒绝，包括重试旧回执；已收到的记录无法通过撤权收回。账号、认证与公开资料由 `server/cloud` 维护，节点内部档案与模型校验由 `agent/node` 和 `agent/ai-client` 维护，中立身份类型位于 `crates/social`。
+初始管理员转让和角色复制尚未实现。撤权后所有新管理或只读请求被拒绝，包括重试旧回执；已收到的记录无法通过撤权收回。账号、认证与公开资料由 `server` 维护，节点内部档案与模型校验由 `agent/node` 和 `agent/ai-client` 维护，中立身份类型位于 `crates/social`。

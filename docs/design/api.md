@@ -1,6 +1,6 @@
 # API 与事件
 
-[总纲](overview.md) · [存储与迁移](storage.md) · [界面与桌面](frontend.md)
+[总纲](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md) · [存储与迁移](storage.md) · [界面与桌面](https://github.com/NingCold/llm-nest/blob/main/docs/design/frontend.md)
 
 ## 已实现的云端接口
 
@@ -96,7 +96,7 @@ ContactIntent 提供 `{id,creatorId,aiId,content,dueAt,expiresAt,utcOffsetMinute
 
 ## 云端 AI 与节点接口
 
-以下路由均省略 `/api`，共享类型见 `connector::node`，服务端入口为 `server/cloud/src/nodes.rs`、`management.rs` 与 `consciousness.rs`。当前协议版本为 4，JSON 字段与 tagged frame 的 `type` 均为 camelCase；UUID 和版本为字符串，时间为 RFC3339。实现与联调状态见[验证指南](../validation/README.md#云端-ai-节点验证)。
+以下路由均省略 `/api`，共享类型见 `connector::node`，服务端入口为 `server/src/nodes.rs`、`management.rs` 与 `consciousness.rs`。当前协议版本为 4，JSON 字段与 tagged frame 的 `type` 均为 camelCase；UUID 和版本为字符串，时间为 RFC3339。实现与联调状态见[验证指南](https://github.com/NingCold/llm-nest/blob/main/docs/validation/README.md#云端-ai-节点验证)。
 
 ### AI 账号与配对
 
@@ -150,7 +150,7 @@ ContactIntent 提供 `{id,creatorId,aiId,content,dueAt,expiresAt,utcOffsetMinute
 
 `NodeTask` 为 `{id,aiId,conversationId,bindingVersion,revision,trigger,automatic,status,expiresAt}`，status 为 queued/running/completed/failed/interrupted/cancelled/expired/uncertain。trigger 为 `{type:message,messageId,inputIds}` 或 `{type:contact,intentId,revision,creatorId,content,dueAt}`；约定没有触发消息，也不附带群话题引用。automatic 标记有限自动接话和一次性约定，供节点预留自己的自动 token 预算。
 
-消息触发任务有效期五分钟，合并后从最新输入计算；约定使用明确的 expiresAt。同一窗口按 cloud_node_tasks.queue_position 串行开始，未到执行时间的延后约定不阻挡普通消息，跨 AI/节点最多一个 running。非队首返回 409 `task_not_ready`，已有运行返回 409 `conversation_busy`，两者均明确未开始、不返回开始确认；普通 409、网络错误或确认丢失不能视为这个保证。开始回执为 `{taskId,runId,messageId,confirmationId,bindingVersion}`；相同 requestId 和内容可安全重查，改变原命令报冲突。调用顺序与不确定恢复见[执行设计](execution.md#当前云端私聊与群聊执行)。
+消息触发任务有效期五分钟，合并后从最新输入计算；约定使用明确的 expiresAt。同一窗口按 cloud_node_tasks.queue_position 串行开始，未到执行时间的延后约定不阻挡普通消息，跨 AI/节点最多一个 running。非队首返回 409 `task_not_ready`，已有运行返回 409 `conversation_busy`，两者均明确未开始、不返回开始确认；普通 409、网络错误或确认丢失不能视为这个保证。开始回执为 `{taskId,runId,messageId,confirmationId,bindingVersion}`；相同 requestId 和内容可安全重查，改变原命令报冲突。调用顺序与不确定恢复见[执行设计](https://github.com/NingCold/llm-nest-agent/blob/main/docs/design/execution.md#当前云端私聊与群聊执行)。
 
 `NodeConversation` 为 `{id,kind,name,revision,members:[NodeAccount]}`，members 为当前成员，不含客户端群角色包装。`NodeMessage` 为 `{id,senderId,senderName,replyTo,mentions,text,revision,position,createdAt,attachments}`，附件 `{index,kind,mime,byteLength,name?}`，sources 为完整读取材料的 ID/修订列表。消息任务的材料限定于触发位置以内原文，另允许本窗 queue_position 更早、已 completed 且其触发位置不晚于本次触发的任务输出，不纳入后续无关真人输入；contact 没有触发消息位置，读取当前窗口历史。开始前对读取列表与窗口 revision 整体复核并冻结，开始后按冻结 ID/revision 逐条检查，不用新一轮最近历史替换旧依赖。普通文件内容不发送给模型；图片经任务授权接口读取。
 
@@ -220,7 +220,7 @@ delta 是完整累计正文检查点，最多 256 KiB，每 500ms 至多一次�
 
 当前 v4 协议沿用 NodeMessage 的稳定 position、TaskMaterials 的可空 reference，以及 StartRequest 必需的 derivedSources 与 materialScopes。sources 保持近期原文快照；derivedSources 只列实际读到的记忆、摘要和引用的原文依赖，materialScopes 是实际窗口的节点版本。云端只接受本窗口或当前有效引用的来源群，开始、流式提交与最终结果都复核冻结来源和版本。来源游标用于同步，不因其他窗口发生变化而否定当前运行。
 
-角色/模型参数的在线编辑与管理员名单使用上文云端管理接口；模型 Key 只在节点本地配置。详细行为见[意识系统](consciousness.md)。
+角色/模型参数的在线编辑与管理员名单使用上文云端管理接口；模型 Key 只在节点本地配置。详细行为见[意识系统](https://github.com/NingCold/llm-nest-agent/blob/main/docs/design/consciousness.md)。
 
 ## 数据迁移接口
 

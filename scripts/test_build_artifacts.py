@@ -17,26 +17,20 @@ def load(name):
     return module
 
 
-web = load('package-web')
+class WebFixture:
+    @staticmethod
+    def package(dist, output, version):
+        output.mkdir()
+        archive = output / 'fixture.tar.gz'
+        with tarfile.open(archive, 'w:gz') as tar:
+            tar.add(dist / 'index.html', arcname='index.html')
+        (output / 'web-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'webVersion': version, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}))
+        return archive
+web = WebFixture()
 cloud = load('prepare-cloud-context')
 
 
 class ArtifactTests(unittest.TestCase):
-    def test_agent_packaging_checks_executable_version(self):
-        spec = importlib.util.spec_from_file_location('package_agent', Path(__file__).parents[1] / 'agent/scripts/package-agent.py')
-        agent = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(agent)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            binary = root / 'llmn-agent'
-            binary.write_bytes(b'agent fixture')
-            with patch.object(agent.subprocess, 'check_output', return_value='llmn-agent 2.0.0\n'):
-                with self.assertRaisesRegex(ValueError, 'version mismatch'):
-                    agent.package(binary, root / 'bad', '1.2.3', 'x86_64-unknown-linux-gnu')
-            with patch.object(agent.subprocess, 'check_output', return_value='llmn-agent 1.2.3\n'):
-                result = agent.package(binary, root / 'out', '1.2.3', 'x86_64-unknown-linux-gnu')
-            self.assertEqual(result.read_bytes(), binary.read_bytes())
-
     def test_archive_path_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -63,7 +57,7 @@ class ArtifactTests(unittest.TestCase):
                 package = repo / member
                 package.mkdir(parents=True)
                 (package / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="1.2.3"\n')
-            (repo / 'server/cloud/Dockerfile').write_text('FROM fixture')
+            (repo / 'server/Dockerfile').write_text('FROM fixture')
             dist = root / 'dist'
             dist.mkdir()
             (dist / 'index.html').write_text('fixture')

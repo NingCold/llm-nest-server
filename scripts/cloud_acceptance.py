@@ -70,7 +70,7 @@ def main():
     parser.add_argument("--output", required=True, help="Ignored private JSON file for subsequent manual tests")
     args = parser.parse_args()
     root = args.server_root.rstrip("/")
-    compose = ["sudo", "-n", "docker", "compose", "--env-file", root+"/private/cloud.env", "-f", root+"/src/server/cloud/deploy/compose.yaml"]
+    compose = ["sudo", "-n", "docker", "compose", "--env-file", root+"/private/cloud.env", "-f", root+"/src/server/deploy/compose.yaml"]
     clients = [Client(args.url, args.ca) for _ in range(3)]
     accounts = []
     suffix = secrets.token_hex(5)
