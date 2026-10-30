@@ -8,6 +8,8 @@ cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked
 python scripts/check-boundaries.py
+python scripts/release.py validate
+python scripts/test_release.py
 python scripts/test_migrate_local.py
 python scripts/test_build_artifacts.py
 python scripts/test_clean_build_artifacts.py
@@ -16,3 +18,5 @@ python scripts/test_clean_build_artifacts.py
 数据库测试设置 `CLOUD_TEST_DATABASE_URL`，仅指向可销毁的独立测试库。普通 Rust 测试通过不代表 PostgreSQL 链路已执行；详见[验证](validation.md)。
 
 运行服务所需变量和创建邀请的方法见[服务说明](../server/README.md)。部署接收客户端发布的 Web 压缩包及版本摘要清单，见[部署说明](../server/deploy/README.md)。
+
+已部署的 SQL 迁移必须保留原始字节，包括换行。`scripts/migration-checksums.json` 保存已有迁移的 SQLx 摘要，CI 与发布流程逐份检查；不要通过改数据库中的校验值跳过不一致。

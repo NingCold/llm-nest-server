@@ -1,38 +1,55 @@
 {
   "schemaVersion": 1,
-  "status": "locally-validated-not-deployed",
-  "buildProfile": "debug",
-  "target": "x86_64-pc-windows-msvc",
+  "status": "alpha-deployed-to-private-test-environment",
+  "validatedAt": "2026-10-30",
+  "buildProfile": "release",
   "protocol": {
     "node": "v4",
     "encryption": "sealedV1"
   },
   "server": {
-    "version": "0.1.1-alpha.11",
-    "commit": "e3970efb080adf45e373f449a7dd47af91ee3bd8",
-    "sha256": "249ab91bb1239db661a2e634f4717f51d60037907c726a9b9b413e7262f169fd",
-    "imageDigest": null
+    "version": "0.1.1-alpha.12",
+    "commit": "df7655e6b0a0bc423466283d101d892f920464d7",
+    "imageId": "sha256:eaf99773c4a8343eb0ace9af01b7f427738b0caf42809f3820eeecaa062bf539",
+    "artifactSha256": "6c2e927f3983cf7a4fb0f91afe7e71f7fb17e4dd9615081bf7988f163dc5f4df",
+    "releaseUrl": "https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.1-alpha.12"
   },
   "web": {
-    "version": "0.1.1-alpha.11",
-    "commit": "01516626083ac84466da666eb843789aeeb40361",
-    "sha256": "748c066e0b31c843c28a648f448054bff68e58ecfebb31d982fabdbfb3cd903b"
+    "version": "0.1.1-alpha.13",
+    "commit": "fa21a93f3bdcbcb1c77e4e357666f906c04f6978",
+    "sha256": "c829595cba06d73bdb0d082123a954353942daf2af3ce6cfdeb846a8af01829c",
+    "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.1-alpha.13/llmn-web-0.1.1-alpha.13.tar.gz"
+  },
+  "desktop": {
+    "version": "0.1.1-alpha.13",
+    "commit": "fa21a93f3bdcbcb1c77e4e357666f906c04f6978",
+    "installedTarget": "x86_64-pc-windows-msvc",
+    "installedPackage": "NSIS",
+    "sha256": "157ad7569ab92947d2b69b91ac475c741ec8e7b033cba76f3181ad1ce5e69539"
   },
   "agent": {
-    "version": "0.1.1-alpha.11",
-    "commit": "ce01a27eeed058bc54ff1b3f957a93f2b376e7a0",
-    "sha256": "09cd1b007aa7e66a66a91604faf470d1bbbf17f38c5e777001ff9e3594cd5a24"
+    "version": "0.1.1-alpha.13",
+    "commit": "a78f729b116a6ff53816240c3a555c5f51c2b80c",
+    "manifestUrl": "https://github.com/NingCold/llm-nest-agent/releases/download/v0.1.1-alpha.13/agent-manifest.json",
+    "sha256": {
+      "x86_64-pc-windows-msvc": "8ddc4dfd8c3ac7bf60b54bab19e5c4a0d1e60387713664c79fd71e5323060860",
+      "x86_64-unknown-linux-gnu": "3c2af1cfa4f67914184c703ac5d9897014170f38874efd222f4fb0cc26bde0cc"
+    }
   },
   "connector": {
-    "commit": "cda5facfc441890cbc053db8374ea2141580689d"
-  },
-  "clientCryptoFixture": {
-    "commit": "01516626083ac84466da666eb843789aeeb40361",
-    "manifestSha256": "b1303fd64b18521c971398941f917438ab978b51289913766780b0e87fe1636c"
+    "consumerCommit": "f47f9b4a99ba8602b7992b53d22bacf08534a64c"
   },
   "validation": {
-    "fullSimulatedModelCalls": 21,
-    "migrationSimulatedModelCalls": 0,
-    "realModelCalls": 0
+    "freshDatabaseAcceptance": true,
+    "restoredDatabaseAcceptance": true,
+    "preservedServerTables": 15,
+    "preservedInstalledDataFiles": 79,
+    "realModelCalls": 0,
+    "notCovered": [
+      "daily account history after restart and unlock",
+      "MSI installation and clean Windows installation",
+      "GNOME manual acceptance",
+      "independent security audit"
+    ]
   }
 }
