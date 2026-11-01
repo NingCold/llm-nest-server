@@ -235,13 +235,32 @@ max_tokens = 512
   const materialMigration = process.argv.includes('--migration-only') ? require('./crypto_material_migration_acceptance.cjs') : null;
   const materialFixture = materialMigration ? await materialMigration.seed({ human, other, aiId, nodeDir, step, http, sql, directory }) : null;
   let rpcDirectory = nodeDir;
+  const unprepared = JSON.parse(step('crypto-status', nodeDir, aiId, human.account, human.device));
+  assert.equal(unprepared.deviceId, null, 'status must not create an AI device');
+  assert.equal(unprepared.identityReady, false);
+  assert.equal(unprepared.peerTrusted, false);
   const identity = JSON.parse(step('crypto-init', nodeDir, aiId));
+  assert.equal(identity.identityReady, true);
+  assert.equal(identity.recoverySaved, false);
+  const repeatedIdentity = JSON.parse(step('crypto-init', nodeDir, aiId));
+  assert.deepEqual(repeatedIdentity, identity, 'retrying setup preserves the original identity and backup');
   const recoveryPath = path.join(directory, 'ai-recovery.private.json');
   step('crypto-export-recovery', nodeDir, aiId, recoveryPath);
   step('crypto-trust', nodeDir, aiId, human.account, human.device, human.machine.identityKeys.ed25519.toBase64(), human.machine.identityKeys.curve25519.toBase64(), human.master);
+  const prepared = JSON.parse(step('crypto-status', nodeDir, aiId, human.account, human.device));
+  assert.equal(prepared.recoverySaved, true);
+  assert.equal(prepared.peerTrusted, true, 'Agent has verified the administrator device');
   const peer = { account: aiId, device: identity.deviceId, master: Object.values(identity.master.keys)[0] };
   await trust(human, peer);
-  step('crypto-authorize-admin', nodeDir, aiId, human.account, human.device);
+  if (materialMigration) {
+    step('crypto-authorize-admin', nodeDir, aiId, human.account, human.device);
+  } else {
+    // The desktop saves the first encrypted profile before starting the node.
+    const initialProfile = await resource('profile', null, randomUUID(), '0', {
+      revision: '1', persona: '本机验收角色', selection: { provider: 'fixture', model: 'fixture' }, max_tokens: 256,
+    });
+    assert.equal(initialProfile.applied, null, 'first profile saves while the node is stopped');
+  }
   let running = startNode(nodeDir);
   const managed = () => http(human, '/ai');
   await waitFor(() => {
