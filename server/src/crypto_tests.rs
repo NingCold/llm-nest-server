@@ -74,6 +74,133 @@ impl Drop for Api {
         self.task.abort();
     }
 }
+async fn directory_revision(f: &Fixture) -> i64 {
+    sqlx::query_scalar("SELECT revision FROM cloud_crypto_device_directory WHERE singleton")
+        .fetch_one(&f.state.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn crypto_directory_sync_preserves_old_clients_and_retries_unconfirmed_changes() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let api = Api::new(&f).await;
+    let (a, h) = &f.users[0];
+    let device = registered(&api, h, *a).await;
+    let path = format!("/crypto/sync?deviceId={device}&after=0");
+    let first = api.ok(h, Method::GET, &path, Value::Null).await;
+    let version = first["llmn_device_lists_version"].as_str().unwrap();
+    assert!(
+        !first["device_lists"]["changed"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let confirmed = format!("{path}&deviceListsVersion={version}");
+    let unchanged = api.ok(h, Method::GET, &confirmed, Value::Null).await;
+    assert_eq!(unchanged["device_lists"]["changed"], json!([]));
+    assert_eq!(unchanged["next_batch"], first["next_batch"]);
+    // Sending a response never confirms it on behalf of either kind of client.
+    let legacy = api.ok(h, Method::GET, &path, Value::Null).await;
+    assert_eq!(legacy["device_lists"], first["device_lists"]);
+    sqlx::query("UPDATE cloud_crypto_devices SET device_keys=device_keys || '{\"signatures\":{\"test\":{}}}'::jsonb WHERE account_id=$1 AND device_id=$2")
+        .bind(a).bind(&device).execute(&f.state.pool).await.unwrap();
+    for _ in 0..2 {
+        let changed = api.ok(h, Method::GET, &confirmed, Value::Null).await;
+        assert_ne!(
+            changed["llmn_device_lists_version"],
+            first["llmn_device_lists_version"]
+        );
+        assert_eq!(changed["device_lists"], first["device_lists"]);
+    }
+    drop(api);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn crypto_directory_revision_tracks_public_changes_and_rolls_back() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let api = Api::new(&f).await;
+    let (a, h) = &f.users[0];
+    let device = registered(&api, h, *a).await;
+    let original = directory_revision(&f).await;
+    sqlx::query("UPDATE cloud_crypto_devices SET display_name='renamed',device_keys=device_keys,revoked=revoked WHERE account_id=$1")
+        .bind(a).execute(&f.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_crypto_one_time_keys(account_id,device_id,key_id,key_data) VALUES($1,$2,'test','{}')")
+        .bind(a).bind(&device).execute(&f.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_crypto_inbox(account_id,device_id,event) VALUES($1,$2,'{}')")
+        .bind(a)
+        .bind(&device)
+        .execute(&f.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(directory_revision(&f).await, original);
+    let mut tx = f.state.pool.begin().await.unwrap();
+    sqlx::query("UPDATE cloud_crypto_devices SET revoked=true WHERE account_id=$1")
+        .bind(a)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(directory_revision(&f).await, original);
+    for revoked in [true, false] {
+        sqlx::query("UPDATE cloud_crypto_devices SET revoked=$2 WHERE account_id=$1")
+            .bind(a)
+            .bind(revoked)
+            .execute(&f.state.pool)
+            .await
+            .unwrap();
+    }
+    assert_eq!(directory_revision(&f).await, original + 2);
+    let mut previous = directory_revision(&f).await;
+    for statement in [
+        "INSERT INTO cloud_crypto_signing_keys(account_id,master_key) VALUES($1,'{}')",
+        "UPDATE cloud_crypto_signing_keys SET master_key='{\"keys\":{}}' WHERE account_id=$1",
+        "DELETE FROM cloud_crypto_signing_keys WHERE account_id=$1",
+        "INSERT INTO cloud_ai_bindings(ai_id) VALUES($1)",
+        "UPDATE cloud_ai_bindings SET version=version+1 WHERE ai_id=$1",
+        "UPDATE cloud_crypto_devices SET node_id='00000000-0000-0000-0000-000000000001',binding_version=1 WHERE account_id=$1",
+        "UPDATE cloud_ai_bindings SET node_id='00000000-0000-0000-0000-000000000001' WHERE ai_id=$1",
+        "DELETE FROM cloud_ai_bindings WHERE ai_id=$1",
+        "UPDATE accounts SET status='disabled' WHERE id=$1",
+        "UPDATE accounts SET status='active' WHERE id=$1",
+    ] {
+        sqlx::query(statement)
+            .bind(a)
+            .execute(&f.state.pool)
+            .await
+            .unwrap();
+        let next = directory_revision(&f).await;
+        assert_eq!(next, previous + 1, "{statement}");
+        previous = next;
+    }
+    sqlx::query("INSERT INTO cloud_ai_bindings(ai_id) VALUES($1)")
+        .bind(a)
+        .execute(&f.state.pool)
+        .await
+        .unwrap();
+    let previous = directory_revision(&f).await;
+    sqlx::query(
+        "UPDATE cloud_ai_bindings SET last_seen_at=now(),node_name='renamed' WHERE ai_id=$1",
+    )
+    .bind(a)
+    .execute(&f.state.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE accounts SET name='renamed' WHERE id=$1")
+        .bind(a)
+        .execute(&f.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(directory_revision(&f).await, previous);
+    drop(api);
+    f.close().await;
+}
+
 async fn conversation(f: &Fixture, a: Uuid, b: Uuid) -> Uuid {
     let cid = Uuid::new_v4();
     let (first, second) = if a < b { (a, b) } else { (b, a) };

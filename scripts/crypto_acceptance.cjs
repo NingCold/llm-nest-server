@@ -91,6 +91,64 @@ async function sync(s) {
   await flush(s);
   return processed;
 }
+async function verifyDirectorySync(a, b) {
+  const states = [a, b].map((session, i) => ({ session, name: i ? 'b' : 'a', version: undefined }));
+  async function round(state) {
+    const s = state.session;
+    const counts = { client: state.name, sync: 0, keysQuery: 0, otherCryptoRequests: 0 };
+    async function drain() {
+      for (;;) {
+        const requests = await s.machine.outgoingRequests();
+        if (!requests.length) return;
+        for (const request of requests) {
+          if (request.type === sdk.RequestType.KeysQuery) counts.keysQuery++;
+          else counts.otherCryptoRequests++;
+          await outgoing(s, request);
+        }
+      }
+    }
+    await drain();
+    const version = state.version === undefined ? '' : `&deviceListsVersion=${encodeURIComponent(state.version)}`;
+    const value = await http(s, `/crypto/sync?deviceId=${encodeURIComponent(s.device)}&after=${encodeURIComponent(s.cursor)}${version}`);
+    counts.sync++;
+    assert.equal(typeof value.llmn_device_lists_version, 'string');
+    await s.machine.receiveSyncChanges(JSON.stringify(value.to_device.events), new sdk.DeviceLists(value.device_lists.changed.map(id => new sdk.UserId(id)), value.device_lists.left.map(id => new sdk.UserId(id))), new Map(Object.entries(value.device_one_time_keys_count)), new Set(value.device_unused_fallback_key_types), new sdk.DecryptionSettings(sdk.TrustRequirement.CrossSigned));
+    await drain();
+    // Confirm only after all generated requests and their SDK acknowledgements succeed.
+    s.cursor = value.next_batch;
+    state.version = value.llmn_device_lists_version;
+    return { ...counts, changed: value.device_lists.changed.length };
+  }
+  async function steady() {
+    const results = [];
+    for (let i = 0; i < 3; i++) {
+      for (const state of states) {
+        const result = await round(state);
+        assert.equal(result.changed, 0, 'confirmed directory must stay unchanged');
+        assert.equal(result.keysQuery, 0, 'steady sync must not repeat KeysQuery');
+        results.push(result);
+      }
+    }
+    return results;
+  }
+  const warmup = [];
+  for (const state of states) warmup.push(await round(state));
+  const steadyBefore = await steady();
+  // A disposable device without uploaded keys changes the global directory revision
+  // without replacing or revoking either trusted SDK identity.
+  await http(a, '/crypto/devices', 'POST', { deviceId: randomUUID(), name: 'directory revision acceptance' });
+  const invalidated = [];
+  for (const state of states) {
+    const result = await round(state);
+    assert(result.changed > 0, 'directory mutation must invalidate the confirmed version');
+    assert(result.keysQuery > 0, 'tracked SDK users must be queried after directory mutation');
+    invalidated.push(result);
+  }
+  const steadyAfter = await steady();
+  const result = { warmup, steadyBefore, directoryMutations: 1, invalidated, steadyAfter };
+  console.log(`PASS: device directory SDK request counts ${JSON.stringify(result)}`);
+  return result;
+}
 async function bootstrap(s) {
   const b = await s.machine.bootstrapCrossSigning(false);
   if (b.uploadKeysRequest) await outgoing(s, b.uploadKeysRequest);
@@ -485,12 +543,14 @@ async function main() {
   const cid = conversation.id;
   await bootstrap(a); await bootstrap(b);
   await trust(a, b); await trust(b, a);
+  phase = 'device directory SDK request counts';
+  const directorySync = await verifyDirectorySync(a, b);
   if (process.argv.includes('--migration-only')) {
     phase = 'history conversion and independent SDK recovery';
     await require('./crypto_migration_acceptance.cjs').run({ a, b, http, sdk, signup, device, bootstrap, trust, sync, decrypt, sql, roomId, userId, origin, sign, outgoing, query, setRequireEncryption, directory, serveUI: process.argv.includes('--serve-ui') });
     const modelCalls = await agentFlow(a, b);
     for (const s of [a, b]) s.machine.close();
-    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: 'migration', modelCalls, database, date: new Date().toISOString() }));
+    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: 'migration', modelCalls, directorySync, database, date: new Date().toISOString() }));
     console.log('PASS: encrypted history conversion, independent recovery, node material migration and strict deployment policy.');
     if (process.argv.includes('--serve-ui')) {
       console.log(`Isolated UI fixture retained at ${directory}; create its stop file when finished.`);
@@ -571,6 +631,6 @@ async function main() {
   await http(untrusted, `/crypto/sync?deviceId=${untrusted.device}&after=0`, 'GET', undefined, 403);
   for (const s of [a, b, untrusted]) s.machine.close();
   console.log('PASS: official SDK cross-signing, Olm distribution, signed private ciphertext, tamper rejection, idempotent retry, no plaintext in PostgreSQL, login alone cannot decrypt, recovery to a new device, WASM/Rust bidirectional interoperability, revoked device rejected.');
-  fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: process.argv.includes('--social-only') ? 'social' : 'full', modelCalls, database, date: new Date().toISOString() }));
+  fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: process.argv.includes('--social-only') ? 'social' : 'full', modelCalls, directorySync, database, date: new Date().toISOString() }));
 }
 main().catch(error => { console.error(`FAIL ${phase}:`, error?.stack || error?.description || error?.message || String(error)); process.exitCode = 1; }).finally(() => { children.forEach(child => child.kill()); modelServer?.close(); server.kill(); fs.closeSync(log); });

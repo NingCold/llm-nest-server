@@ -94,6 +94,13 @@ pub fn migrator() -> sqlx_core::migrate::Migrator {
                 include_str!("../migrations/0012_history_migration.sql").into(),
                 false,
             ),
+            Migration::new(
+                13,
+                "crypto device lists version".into(),
+                MigrationType::Simple,
+                include_str!("../migrations/0013_crypto_device_lists_version.sql").into(),
+                false,
+            ),
         ]
         .into(),
         ..Migrator::DEFAULT

@@ -604,6 +604,7 @@ async fn backup(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
 struct SyncQuery {
     device_id: String,
     after: Option<String>,
+    device_lists_version: Option<String>,
 }
 async fn sync(
     State(s): State<Arc<AppState>>,
@@ -634,11 +635,20 @@ async fn sync(
     } else {
         "active".into()
     };
-    let changed: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM accounts WHERE status='active'")
-        .fetch_all(&mut *tx)
-        .await?;
+    let directory_version: i64 =
+        sqlx::query_scalar("SELECT revision FROM cloud_crypto_device_directory WHERE singleton")
+            .fetch_one(&mut *tx)
+            .await?;
+    let directory_version = directory_version.to_string();
+    let changed: Vec<Uuid> = if q.device_lists_version.as_deref() == Some(&directory_version) {
+        Vec::new()
+    } else {
+        sqlx::query_scalar("SELECT id FROM accounts WHERE status='active'")
+            .fetch_all(&mut *tx)
+            .await?
+    };
     Ok(Json(
-        json!({"llmn_handover_state":handover,"next_batch":next.to_string(),"to_device":{"events":rows.iter().map(|r|r.get::<Value,_>("event")).collect::<Vec<_>>()},"device_lists":{"changed":changed.into_iter().map(matrix_user).collect::<Vec<_>>(),"left":[]},"device_one_time_keys_count":keys,"device_unused_fallback_key_types":if unused{vec!["signed_curve25519"]}else{vec![]}}),
+        json!({"llmn_device_lists_version":directory_version,"llmn_handover_state":handover,"next_batch":next.to_string(),"to_device":{"events":rows.iter().map(|r|r.get::<Value,_>("event")).collect::<Vec<_>>()},"device_lists":{"changed":changed.into_iter().map(matrix_user).collect::<Vec<_>>(),"left":[]},"device_one_time_keys_count":keys,"device_unused_fallback_key_types":if unused{vec!["signed_curve25519"]}else{vec![]}}),
     ))
 }
 
