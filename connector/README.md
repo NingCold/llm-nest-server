@@ -2,6 +2,19 @@
 
 `connector` 提供云端节点 HTTP/WSS、同机通信、密文与迁移协议。它不加载模型、数据库或应用 Runtime，外部 Agent 可以单独依赖这个包。
 
+## 只接入已有服务器
+
+在自己的 Rust 项目的 `Cargo.toml` 中添加依赖即可，无需把 Agent 放进服务端仓库：
+
+```toml
+[dependencies]
+connector = { git = "https://github.com/NingCold/llm-nest-server.git", rev = "f47f9b4a99ba8602b7992b53d22bacf08534a64c" }
+```
+
+这里固定到现有 Agent 使用的同一公开提交。Cargo 会获取这个 Git 仓库，但只构建 connector 及其依赖，不编译服务端；接入已有服务器不需要在本机准备服务端数据库、容器或部署环境。节点凭据与配对方式见下文。
+
+非 Rust Agent 可以按 [HTTP/WSS 协议](../docs/design/api.md#云端-ai-与节点接口)直接实现接入；目前项目没有提供 Python 或 TypeScript SDK。
+
 `management::AgentCatalog` 定义本机 `llmn-agent catalog` 的版本 1 JSON 契约，包含 Agent 版本及供应商和模型选项；不含节点配置、地址或凭据。它独立于云端节点 v4 协议。
 
 `migration` 定义旧聊天迁入云端时的资料与账号映射，`node::transfer` 定义自带 Agent 的 AI 资料包。两种格式都不含模型 Key 或节点凭据；外部 Agent 可以沿用自己的记忆格式。实际操作见[迁移指南](../docs/migration.md)。
@@ -12,9 +25,9 @@
 
 ## 独立示例
 
-`crypto` 定义密文封装、设备、公钥投递、备份恢复和 AI 资料 CAS；`NodeClient` 提供传输方法，包本身不实现密码学。节点完成真实密钥初始化、授权与恢复准备后才声明 `sealedV1`，演示节点不能处理加密任务。消息保留设备与账号 master 双签，同机与云端使用相同封装；同机 Olm 密钥投递已通过真实 Windows IPC 验证。详见[加密契约](../docs/design/crypto-contract.md)。
+`crypto` 定义密文封装、设备、公钥投递、备份恢复和 AI 资料 CAS；`NodeClient` 提供传输方法，包本身不实现密码学。真实加密接入还需通过 Matrix SDK 建立账号与设备身份、核验可信设备，并准备密钥备份与恢复，完成后才声明 `sealedV1`。消息保留设备与账号 master 双签，同机与云端使用相同封装；同机 Olm 密钥投递已通过真实 Windows IPC 验证。详见[加密契约](../docs/design/crypto-contract.md)。
 
-`examples/external_node.rs` 只依赖 connector 的接口。它返回明确标注的固定演示文字，不调用模型，也不是自带 Agent。设置 `LLMN_SERVER`、`LLMN_NODE_ID`、`LLMN_NODE_SECRET`；私有 CA 另设置 `LLMN_CA_FILE` 为 PEM 文件路径。不要把这些值提交到仓库。
+`examples/external_node.rs` 只依赖 connector 的接口。它返回明确标注的固定演示文字，不调用模型，也不是自带 Agent。它不支持 `sealedV1`，不能用于验收强制加密服务器上的完整聊天链路。设置 `LLMN_SERVER`、`LLMN_NODE_ID`、`LLMN_NODE_SECRET`；私有 CA 另设置 `LLMN_CA_FILE` 为 PEM 文件路径。不要把这些值提交到仓库。
 
 ```text
 cargo run -p connector --example external_node -- pair
@@ -22,7 +35,7 @@ cargo run -p connector --example external_node -- status PAIRING_ID
 cargo run -p connector --example external_node -- run
 ```
 
-授权后把查询结果的 AI ID 与绑定版本分别保存为 `LLMN_AI_ID`、`LLMN_BINDING_VERSION`。`run` 建立 WSS、发送 v4 Hello，并每两秒读取任务，读取材料、取得持久开始确认，然后提交固定回答。它用于确认外部节点能接入，不支持持久恢复；运行中断后，不重做已开始的任务。需要真实模型、预算和持久检查点时使用 `agent/node`。
+授权后把查询结果的 AI ID 与绑定版本分别保存为 `LLMN_AI_ID`、`LLMN_BINDING_VERSION`。`run` 建立 WSS、发送 v4 Hello，并每两秒读取任务，读取材料、取得持久开始确认，然后提交固定回答。它用于确认外部节点能接入，不支持持久恢复；运行中断后，不重做已开始的任务。需要真实模型、预算和持久检查点时，使用[独立 Agent 节点](https://github.com/NingCold/llm-nest-agent/blob/main/node/README.md)。
 
 ## 实现自己的 Agent
 
