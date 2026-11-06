@@ -2,7 +2,7 @@
 
 [服务说明](../README.md) · [验证指南](../../docs/validation.md)
 
-这套 Compose 在一台 Linux 服务器运行 PostgreSQL、聊天服务和 HTTPS 入口。只有 HTTPS 的 8443 端口发布到指定 Tailscale 地址，数据库和应用端口留在容器网络内。当前配置使用私有测试收件箱，不发送真实邮件。
+这套 Compose 在一台 Linux 服务器运行 PostgreSQL、聊天服务和 HTTPS 入口。只有 HTTPS 的 8443 端口发布到指定 Tailscale 地址，数据库和应用端口留在容器网络内。本模板使用私有测试收件箱，不发送真实邮件；仅供授权内网 Alpha 试用，不是公网开放部署方案。
 
 服务器需要 Docker Compose。Compose 只启动 `CLOUD_SERVER_IMAGE` 指定的本机镜像，不现场构建或拉取同名应用镜像；未设置变量或尚未加载镜像时直接报错。PostgreSQL、附件、私有环境和证书目录继续沿用。
 
@@ -16,7 +16,7 @@ docker load --input llmn-server-image.tar.gz
 docker image inspect llmn-server:v0.1.1-alpha.12
 ```
 
-在私有 `cloud.env` 中设置 `CLOUD_SERVER_IMAGE=llmn-server:v0.1.1-alpha.12`，按下文启动。版本换成实际核验的固定版本；保留上一可回退镜像和兼容组合，不通过删除数据更新服务。仅在维护者公开草稿后，固定 Release 附件才可下载。
+在私有 `cloud.env` 中设置 `CLOUD_SERVER_IMAGE=llmn-server:v0.1.1-alpha.12`，按下文启动。版本换成实际核验的固定版本；保留上一可回退镜像和兼容组合，不通过删除数据更新服务。固定 Release 附件须由维护者检查后公开；公开软件产物不代表开放站点注册。
 
 ## 从源码准备镜像
 
@@ -75,7 +75,11 @@ docker compose --env-file /srv/llmn-test/private/cloud.env -f /srv/llmn-test/dep
 
 第一个命令返回邀请码，交给受邀人使用，也可以组成站点的 `/#/register?invite=邀请码` 链接。邮件写入 `data/outbox` 下的 JSON 文件，包含收件人和验证或重置链接。维护者在服务器上读取对应邮件，不把整个目录公开到网站。
 
-切换到真实邮件时，移除应用的 `CLOUD_MAIL_OUTBOX`，通过私有环境配置 `CLOUD_SMTP_HOST`、`CLOUD_SMTP_FROM` 和需要的端口、用户名、密码。完整变量见[服务说明](../README.md)。测试收件箱通过不代表真实邮件已经送达。
+首版内网测试站使用 outbox，由维护者转交对应验证链接；SMTP 是后续单独配置和验证的邮件投递方式，不是本次试用的前提。
+
+后续切换 SMTP 时，在私有部署目录的 `compose.yaml` 中删除 app 的 `CLOUD_MAIL_OUTBOX` 环境项，不要只改为空字符串；只要该变量存在，服务就选择文件邮件。将 `CLOUD_SMTP_HOST`、`CLOUD_SMTP_FROM` 及所需的 `CLOUD_SMTP_PORT`、`CLOUD_SMTP_USERNAME`、`CLOUD_SMTP_PASSWORD` 显式加入 app 的 environment，通过私有 `cloud.env` 引用它们。设置用户名时必须同时提供密码；仅填写 `cloud.env` 不会自动把新变量传入容器。真实值只保存在权限为 `600` 的私有配置中，不写入仓库、命令行或日志。
+
+修改后用前文的 Compose 启动命令重新创建 app，并以专用账号实际验证注册邮件与密码重置邮件送达。outbox 测试通过不能代替 SMTP 投递验证。变量用途见[服务配置](../README.md)。
 
 桌面测试连接可在启动进程时设置 `CLOUD_CA_CERT_FILE=/绝对路径/ca.crt`，无需关闭证书校验。网页使用浏览器自己的证书信任设置。客户端里填写与证书一致的 HTTPS 地址。
 
@@ -101,4 +105,4 @@ python scripts/cloud_acceptance.py \
 
 确认日常账号已有可信设备和恢复文件，使用中的窗口与节点资料都已完成转换后，在私有 `cloud.env` 设置 `CLOUD_REQUIRE_ENCRYPTION=true`，重新创建应用容器。此时旧客户端不能发送明文，新窗口需先准备加密；明文管理转发、旧格式导入和同机明文补传也会被拒绝。升级或切换不会重新执行旧消息和约定。
 
-该开关不改变旧数据，也不是迁移成功证明。切换前后都要以有权账号检查历史、附件、资料应用与新消息；没有实际完成的设备验收继续保留在进度文档中。
+该开关不改变旧数据，也不是迁移成功证明。切换前后都要以有权账号检查历史、附件、资料应用与新消息；设备使用结果与尚待验证项记录在[产品当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)中。

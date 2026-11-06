@@ -4,7 +4,7 @@
 
 发布前更新 server/deploy/compatibility.json，记录服务端、Web、Agent、connector 的确切版本/提交及摘要，还有节点 v4 与 sealedV1。不能以 latest 或临时 CI artifact 作为长期依赖。保留上一组可运行产物；回退服务不默认回退数据库。
 
-当前已公开 [0.1.1-alpha.12](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.1-alpha.12)，使用 Web `alpha.13`。手动工作流接收确切 Web 版本及永久下载地址，生成可核对的镜像和草稿 Release；维护者检查产物和部署结果后再公开。项目使用 Apache-2.0，第三方组件保留各自许可。各仓只读获取依赖，不使用本仓 GITHUB_TOKEN 写入其他仓。
+已公开产物包括 [0.1.1-alpha.12](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.1-alpha.12)，使用 Web `alpha.13`。这是该次发布组合，不表示当前内网版本；当前试用状态见[产品当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。手动工作流接收确切 Web 版本及永久下载地址，生成可核对的镜像和草稿 Release；维护者检查产物和部署结果后再公开。项目使用 Apache-2.0，第三方组件保留各自许可。各仓只读获取依赖，不使用本仓 GITHUB_TOKEN 写入其他仓。
 
 镜像同时交付根 Apache-2.0 LICENSE、NOTICE 和 cargo-about 0.9.3 按服务端 Linux 依赖生成的 THIRD-PARTY-NOTICES.txt。生成失败会阻止镜像准备；具体命令和镜像内路径见部署说明。Web 与 Debian 运行库保留各自声明。
 

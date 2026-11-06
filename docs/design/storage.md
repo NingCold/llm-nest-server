@@ -39,7 +39,7 @@ cloud_receipts 只保存命令 SHA256 与实体 ID，不重复保存正文或 ba
 
 ## 当前节点存储
 
-`agent/node` 独立使用 `node.sqlite`，与旧 `social.sqlite3` 无关。bindings 保存每 AI 的绑定版本和原始节点凭据，profiles 保存每 AI 的角色、模型选择和参数，tasks 保存开始意图、开始回执、草稿及原始最终提交，budget/meta 保存每日保守预留及不回退的日期。节点目录有独占进程锁和当前用户私有权限；凭据数据库不能提交、分享或打包。
+Agent 仓库的 `node` 独立使用 `node.sqlite`，与旧 `social.sqlite3` 无关。bindings 保存每 AI 的绑定版本和原始节点凭据，profiles 保存每 AI 的角色、模型选择和参数，tasks 保存开始意图、开始回执、草稿及原始最终提交，budget/meta 保存每日保守预留及不回退的日期。节点目录有独占进程锁和当前用户私有权限；凭据数据库不能提交、分享或打包。
 
 节点的 `conscious_memory`、`conscious_summaries` 和 `conscious_settings` 按 AI/窗口保存记忆、摘要和设置；`conscious_scopes` 保存上下文版本，`conscious_cursors` 保存来源同步位置。写操作回执只存请求编号与指纹，读取不产生回执，避免轮询累积记录。遗忘或来源失效直接清空当前派生正文，回执中没有旧正文可复活。未完成摘要及其调用确认保存在节点，重启收尾而不重复调用。
 
@@ -59,7 +59,7 @@ Send 先在 SQLite 事务保存真人消息和 queued 回合，再返回确认�
 
 桌面 IndexedDB 的待确认草稿快照增加可选 `route:"local"`，与 requestId、文字及附件快照一起保存，防止刷新后把未知本机发送改发云端。已选择的同机路线另以 localStorage 键按服务器、实际真人和窗口隔离保存；成功明确返回云端才移除。此标记不是授权，也不含登录令牌。当前桌面操作者由原生会话确定，退出、401、切服即清除内存身份；默认不持久保存会话，Windows 显式保持登录后用当前用户 DPAPI 保护令牌。重启仍先联网核对会话，再授权同机访问，不提供离线重新登录，详见[账号设计](accounts.md#登录会话与本机解锁)。
 
-`run-managed` 在持有 `node.lock` 时清理旧 `direct-endpoint.json` 并创建新的私有通道；端点文件只含本机通道地址、实例 ID 和随机认证 token，普通 `run` 不创建。桌面原生层读取端点，不把 token、grant、模型 Key 或节点凭据交给网页。本机私有通道本身不等于端到端加密；第二批启用窗口使用相同的 sealedV1 封装与 Olm 密钥投递，已通过真实 Windows IPC 验证。不提供局域网连接。
+`run-managed` 在持有 `node.lock` 时清理旧 `direct-endpoint.json` 并创建新的私有通道；端点文件只含本机通道地址、实例 ID 和随机认证 token，普通 `run` 不创建。桌面原生层读取端点，不把 token、grant、模型 Key 或节点凭据交给网页。本机私有通道本身不等于端到端加密；启用窗口使用相同的 sealedV1 封装与 Olm 密钥投递。不提供局域网连接。
 
 ## 迁移与备份
 

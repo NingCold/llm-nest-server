@@ -21,7 +21,7 @@
 - `sealed` 的结构为 `{version:1, roomId, sender, deviceId, eventId, content, deviceKeys, signatures}`；`content` 是 SDK 输出的 `m.room.encrypted` 内容，`deviceKeys` 为设备公开的 `{ed25519,curve25519}`，不含秘密。正文 `text` 在传输与云端存储中为空。
 - 对完整封装去除 `signatures` 后使用 Matrix canonical JSON，再由 SDK `sign` 生成账号主密钥和设备密钥两份签名。接收端先取得已独立核验的账号主公钥，验证主签名，再用其中签认的设备 Ed25519 公钥验证设备签名；同时核对 Curve25519 公钥及设备 ID 与 SDK 密文一致。Web 验签使用 `@noble/curves`，Rust 使用 SDK 的 vodozemac；不自行实现签名算法。
 - 这两份签名对新消息和恢复历史都必需。Matrix 标准历史备份导入后不保留原 Olm 投递的发送设备认证，因此 SDK 的 `CrossSigned` 解密设置会拒绝这种恢复记录。应用先完成上述强制双签核验，再由 SDK 检查密文并解密；不修改 SDK 的 imported 状态、不假造原投递证明，也没有缺签名时的降级路径。账户主密钥尚未核验或恢复秘密未获授权时不能发送或读回内容。
-- SDK 加密事件类型固定为 `com.llmn.content.v1`。内部正文为 `{version:1, server, kind, conversationId, messageId, senderId, revision, text, replyTo, mentions, runId, sequence}`。`server` 是标准化 HTTPS origin；`kind` 为 `message`、`delta`、`resource` 或 `contactIntent`；第三批增加的附件、来源和窗口版本绑定见下文。未适用字段用 null，mentions 用数组。解密后与收到的外部标识核对，不能把别的窗口、修订或流片段搬过来。创建消息必须由发送方先生成 messageId；事件 ID 使用 `$<messageId>.<revision>.<sequence或final>`。发送前读到的窗口 revision 可作为签名内层的受众版本；云端 position 和服务器生成时间不伪装为发送端已签认的值。
+- SDK 加密事件类型固定为 `com.llmn.content.v1`。内部正文为 `{version:1, server, kind, conversationId, messageId, senderId, revision, text, replyTo, mentions, runId, sequence}`。`server` 是标准化 HTTPS origin；`kind` 为 `message`、`delta`、`resource` 或 `contactIntent`；附件、来源和窗口版本绑定见下文。未适用字段用 null，mentions 用数组。解密后与收到的外部标识核对，不能把别的窗口、修订或流片段搬过来。创建消息必须由发送方先生成 messageId；事件 ID 使用 `$<messageId>.<revision>.<sequence或final>`。发送前读到的窗口 revision 可作为签名内层的受众版本；云端 position 和服务器生成时间不伪装为发送端已签认的值。
 - 所有发送先由 SDK 保存会话进展，再将完整请求和密文持久保存，最后联网。崩溃可能浪费一个未发送的会话序号，但不得发出未保存的密文；重试不重新加密。最终结果与累计流式片段均受保护。
 
 ## 密钥服务
@@ -78,7 +78,7 @@ Windows 原生端通过当前用户 DPAPI 保护保存的口令，解锁时经�
 
 加入群不意味着立即拿到历史钥。尚无可用分享端时显示历史待恢复；已持有记录的端可以分享，节点按当前设备与历史变化去重分享。移除成员或撤销设备后，未来发言使用新会话。已经合法取得的历史钥和明文无法追回。节点按 AI 和窗口分别保存加密状态，同节点多个 AI 在同一群中也使用各自身份。
 
-图片和文件先在端点使用 SDK Attachment 加密。请求的 `encryptedAttachments:[{index,data}]` 只含密文字节；云端附件元数据只有索引、密文长度、`kind:"encrypted"` 和 `application/octet-stream`。原文件名、类型、长度和 SDK `mediaEncryptionInfo` 放在消息的签名内层 `attachments` 中。下载端先验证消息身份，再验证附件哈希、解密并检查原有格式与大小限制；普通文件不自动作为模型输入。修改文字保留原附件；旧明文附件的整体转换留到第四批。
+图片和文件先在端点使用 SDK Attachment 加密。请求的 `encryptedAttachments:[{index,data}]` 只含密文字节；云端附件元数据只有索引、密文长度、`kind:"encrypted"` 和 `application/octet-stream`。原文件名、类型、长度和 SDK `mediaEncryptionInfo` 放在消息的签名内层 `attachments` 中。下载端先验证消息身份，再验证附件哈希、解密并检查原有格式与大小限制；普通文件不自动作为模型输入。修改文字保留原附件；旧明文附件通过下文的历史转换入口整体转换。
 
 群话题接续继续使用原来的消息 ID 和修订，签名内层 `reference` 与外层来源选择对应。来源预览、模型材料和导出均在授权端解密；私聊没有启用加密时，也必须先解开引用的加密群内容才能交给模型。来源修改、撤回或失去共同群权限仍使引用和派生材料失效，不因持有旧钥而绕过当前权限。
 
@@ -109,7 +109,7 @@ Windows 原生端通过当前用户 DPAPI 保护保存的口令，解锁时经�
 
 ## 存量转换与正式切换
 
-第四批使用专门的历史转换入口，不能调用普通消息编辑接口。转换保留原消息 ID、修订、顺序、时间、作者、回复和来源关系，以及各人的已读状态。已有密文不重新加密；撤回记录保持撤回。只读归档仍只读，不借迁移重新启用模型或约定。
+历史转换使用专门入口，不能调用普通消息编辑接口。转换保留原消息 ID、修订、顺序、时间、作者、回复和来源关系，以及各人的已读状态。已有密文不重新加密；撤回记录保持撤回。只读归档仍只读，不借迁移重新启用模型或约定。
 
 旧消息的加密签名属于实际迁移者。消息和约定另带 `historyMigration:{id,actorId,sourceDigest}`；签名内层用 `kind:"historyMessage"` 或 `"historyContactIntent"`，`senderId` 仍为历史作者，`historyMigration` 与外层一致。封装的 `sender` 为迁移者，消息事件 ID 为 `$<原ID>.<原修订>.migration.<迁移ID>`。约定正文的内层修订和事件 ID 修订固定为 `1`，提交时仍核对原约定的状态修订。客户端与节点验证迁移者双签并显示历史迁移标记，不能声称原作者曾对旧消息做过端到端签认。
 

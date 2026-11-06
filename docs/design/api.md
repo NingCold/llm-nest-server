@@ -96,7 +96,7 @@ ContactIntent 提供 `{id,creatorId,aiId,content,dueAt,expiresAt,utcOffsetMinute
 
 ## 云端 AI 与节点接口
 
-以下路由均省略 `/api`，共享类型见 `connector::node`，服务端入口为 `server/src/nodes.rs`、`management.rs` 与 `consciousness.rs`。当前协议版本为 4，JSON 字段与 tagged frame 的 `type` 均为 camelCase；UUID 和版本为字符串，时间为 RFC3339。实现与联调状态见[验证指南](https://github.com/NingCold/llm-nest/blob/main/docs/validation/README.md#云端-ai-节点验证)。
+以下路由均省略 `/api`，共享类型见 `connector::node`，服务端入口为 `server/src/nodes.rs`、`management.rs` 与 `consciousness.rs`。当前协议版本为 4，JSON 字段与 tagged frame 的 `type` 均为 camelCase；UUID 和版本为字符串，时间为 RFC3339。实现与联调状态见[验证指南](https://github.com/NingCold/llm-nest/blob/main/docs/validation/records.md#云端-ai-节点验证)。
 
 ### AI 账号与配对
 
@@ -160,7 +160,7 @@ result 的 status 仅允许 completed/failed/interrupted/uncertain，正文最�
 
 ### 桌面与同机 Agent 私聊
 
-首批同机通道用于已登录真人与其管理的本机 AI 的唯一私聊。首次准备必须联网；云端核对双方成员、真人管理权、AI 启用状态、有效节点绑定，以及屏蔽、暂停和未完成云端任务。准备成功后，同一桌面会话可在断云时使用缓存的授权和文字历史；离线节点不能即时获知云端撤权。第一批采用明文；第二批为启用窗口增加相同 sealedV1 封装与 Olm 密钥投递，已通过真实 Windows IPC 验证。第三批增加密文附件及已准备的群来源缓存；局域网连接尚未提供。
+首批同机通道用于已登录真人与其管理的本机 AI 的唯一私聊。首次准备必须联网；云端核对双方成员、真人管理权、AI 启用状态、有效节点绑定，以及屏蔽、暂停和未完成云端任务。准备成功后，同一桌面会话可在断云时使用缓存的授权和文字历史；离线节点不能即时获知云端撤权。启用窗口使用相同 sealedV1 封装与 Olm 密钥投递，支持密文附件及已准备的群来源缓存；局域网连接尚未提供。
 
 | 方法与路径（省略 `/api`） | 请求与返回 |
 | --- | --- |

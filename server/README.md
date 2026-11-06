@@ -1,22 +1,12 @@
-# 云端聊天服务
+# 云端服务配置
 
-[项目首页](../README.md) · [开发指南](../docs/development.md) · [API](../docs/design/api.md)
+[项目首页](../README.md) · [部署](deploy/README.md) · [开发](../docs/development.md) · [API](../docs/design/api.md)
 
-`cloud-server` 独立运行，使用 PostgreSQL 保存账号、认证、联系人、唯一私聊、群与成员、消息、个人读态、AI 节点绑定与执行任务及事件。图片和普通文件字节保存在独立持久目录。它不依赖本地 Runtime、SocialStore、模型客户端或 AI 执行器。
+`cloud-server` 使用 PostgreSQL 保存账号、认证、联系人、私聊与群、消息、读态、节点绑定、执行任务和事件；附件字节保存在独立持久目录。它不依赖客户端 Runtime、SQLite 或模型执行器。
 
-服务提供邀请注册、邮箱验证、密码登录与找回、联系人、真人与 AI 的私聊和群聊。消息支持附件、编辑、撤回、搜索和导出；群内可管理成员、提及或回复 AI，也可以开启有限自动接话；聊天详情支持暂停、结束和一次性约定联系。私聊可屏蔽，管理员可停用或恢复 AI。
+## 本机启动
 
-模型调用和意识资料保存在独立 [Agent 节点](https://github.com/NingCold/llm-nest-agent)。服务负责节点配对、任务与来源权限、约定到期和自动调用次数，并转发在线记忆和摘要操作；群里的原文也能按权限带回私聊继续讨论。完整接口见 [API](../docs/design/api.md)，后续范围见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
-
-## 部署镜像
-
-发布包先校验 SHA256SUMS 并用 `docker load --input llmn-server-image.tar.gz` 加载，再在私有 Compose 环境中设置固定 `CLOUD_SERVER_IMAGE`。应用使用 `pull_policy: never`，不会自行拉取或构建同名镜像。源码部署先用 `prepare-cloud-context.py` 准备核验过的 Web/服务端构建目录，再 `docker build --tag` 为显式本机镜像，填写同一变量。数据、附件和证书目录沿用，完整命令见[部署说明](deploy/README.md)。
-
-## 启动
-
-私聊、群聊、附件和 AI 资料可用密文保存，服务保管公开设备信息、密钥投递和加密恢复资料，不保管解密秘密。旧聊天可由有权客户端转换，保留作者、顺序和来源关系；客户端从恢复文件重新核对完整历史后才完成。部署时可开启 `CLOUD_REQUIRE_ENCRYPTION`，拒绝旧客户端发送明文；切换前须完成备份和资料准备。详见[加密契约](../docs/design/crypto-contract.md)，联调见[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。
-
-先构建静态页面并准备 PostgreSQL：
+先准备独立 PostgreSQL 数据库和已核验的 Web 静态产物，再设置下表变量：
 
 ```bash
 export CLOUD_WEB_DIR=/absolute/path/to/verified-web
@@ -37,24 +27,20 @@ cargo run -p cloud-server --locked
 
 管理员生成邀请：`cargo run -p cloud-server --locked -- invite 7`；撤销使用 `revoke-invite 邀请码`。命令只需要数据库连接。邀请码和邮件链接属于秘密，不应贴入公开日志。
 
-容器入口见 [Dockerfile](Dockerfile) 和 [Compose](deploy/compose.yaml)。当前测试配置在 Tailscale 地址的 8443 提供 HTTPS，使用测试 CA 和私有 outbox；测试收件箱不放进静态目录。数据库和附件需要配套持久化与备份，单窗口导出不能代替整库备份。
+## 存储与安全边界
 
-## 验证与迁移边界
+部署入口为 [Dockerfile](Dockerfile) 和 [Compose](deploy/compose.yaml)。仅向授权内网提供 HTTPS；数据库与应用端口不直接公开，测试收件箱不得置于静态目录。
 
-设置独立测试库的 `CLOUD_TEST_DATABASE_URL` 后运行 `cargo test -p cloud-server -- --nocapture`。测试为每例建立隔离 schema，未设置变量时数据库测试会跳过，不能当成完整验证。当前验证结果集中在[验证指南](https://github.com/NingCold/llm-nest/blob/main/docs/validation/README.md)。
+启用 sealedV1 后，聊天、附件和 AI 资料由授权端加解密；服务器保存密文、公开设备信息、密钥投递和加密恢复资料，不持有解密秘密。`CLOUD_REQUIRE_ENCRYPTION` 拒绝明文路径，不能代替旧记录转换或恢复核对。切换步骤见[部署说明](deploy/README.md#切换为强制加密)。
 
-[本地数据样本](tests/fixtures/README.md) 继续验证旧 DTO 映射。正式迁移接收使用 `connector::migration` 的版本 1 DTO：登录真人通过 `POST /api/migration/preview` 提交 `MigrationSnapshot`，核对预览后，以 `POST /api/migration/import` 提交 `{snapshot, previewDigest}`。两者沿用会话和 `X-LLMN-Client`/来源检查，上限为 128 MiB，反向代理同样允许 128 MiB。
+数据库与附件需配套持久化和备份，单窗口导出不能代替整库备份。旧 v13 导入、现有记录加密转换与更换节点见[迁移指南](../docs/migration.md)；权限、幂等和资料版本以 [API](../docs/design/api.md)与[加密契约](../docs/design/crypto-contract.md)为准。
 
-快照只能包含一个来源真人，其身份映射为当前登录真人；每个来源 AI 明确新建云端身份，并将当前真人登记为初始管理员，不按名称、模型或旧 UUID 匹配既有账号。云端产生所有新 ID；返回账号、窗口、消息修订/position 和附件索引映射，供节点重写资料来源。`(owner, sourceId)` 和快照摘要保证同源重复请求返回原映射，同源快照变化返回 409；不会重写已经修改或撤回的云端消息。
+## 验证
 
-聊天、附件、联系人 listed/blocked、账号停用、当前群成员及个人置顶/未读状态在同一数据库事务保存；附件先暂存、同步并发布，数据库失败时清理本批文件。已退出的 AI 不恢复成员身份，其历史发送者仍保留；来源真人已经退出的窗口不接受导入。归档和 legacy 窗口以 `readOnly` 提供读取和导出，服务器拒绝发言、修订、撤回、群管理、参与及约定写入；个人读态与置顶仍可修改。
+设置仅用于测试的 `CLOUD_TEST_DATABASE_URL` 后运行：
 
-旧读态由 `message_deliveries.position` 导出为精确的 `readMessageIds`，专用 `cloud_import_reads` 保留旧已读集合；不会把旧 sequence 当成已读游标。新消息沿用正常云端游标，旧已读集合只排除本批已读消息。历史及导出带 `importOrigin`，节点材料同样标明来源；旧 AI 发言不产生新节点运行记录。旧生成中消息保留片段并转为 interrupted，撤回不带原正文或附件。新窗口均暂停且约定授权关闭，旧队列、自动设置和未来约定仅供预览，不恢复执行。模型凭据、角色、记忆与摘要正文不进入此云端接口，应另行导入经重新授权的目标节点。
+```bash
+cargo test -p cloud-server --locked -- --nocapture
+```
 
-## AI 在线管理与只读查看
-
-`GET /api/ai` 保留实际真人身份，返回管理角色、公开资料/管理员版本及节点声明的能力。`PUT /api/ai/{id}/profile` 按 `expectedProfileRevision` 修改名称/简介；`GET /api/ai/{id}/administrators` 读取管理员，只有初始管理员可用 `PUT /api/ai/{id}/administrators/{accountId}` 按 `expectedRevision` 授予或撤销真人管理员，不能移除初始管理员。写操作使用 `requestId` 去重，重放先复核当前权限并返回当前权威结果。
-
-`POST /api/ai/{id}/management` 转发 `view`/`saveProfile` 给声明 `profileManagement` 的当前在线节点，使用节点档案的独立版本。正文仅在内存转发；离线不排队，返回前再次复核会话、管理权与当前绑定。返回 DTO 仅有角色、模型选择与运行参数，不含服务地址和凭据，模型 Key 在节点本地配置。
-
-`GET /api/ai/{id}/view` 读取该 AI 当前窗口列表；其 `/conversations/{cid}/messages` 与 `/messages/{mid}/attachments/{index}?revision=...` 仅提供分页读取和下载。每次读取检查真人管理权及 AI 当前成员身份，不更换登录身份，不改变已读，不提供代发或全局事件订阅。
+每例使用隔离 schema；未设置变量会跳过数据库测试，不能当作完整验证。[验证指南](../docs/validation.md)说明跨仓产物与联调条件；[本地数据夹具](tests/fixtures/README.md)用于旧 DTO 映射回归。
