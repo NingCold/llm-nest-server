@@ -75,7 +75,7 @@ Send 先在 SQLite 事务保存真人消息和 queued 回合，再返回确认�
 
 ## 云端与 Agent 的数据归属
 
-[云端改造计划](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md)确定了数据归属。真人/AI 私聊与群聊、成员与角色、屏蔽和 AI 启停、节点绑定/任务、节点意识资料、接话与约定、在线管理及命令行迁移均已接入。
+[设计总纲](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md#云端客户端和节点各自保存什么)说明三端的数据归属。真人/AI 私聊与群聊、成员与角色、屏蔽和 AI 启停、节点绑定/任务、节点意识资料、接话与约定、在线管理及命令行迁移均已接入。
 
 ### 数据归属
 

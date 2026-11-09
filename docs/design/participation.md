@@ -12,7 +12,7 @@
 
 ## 云端与节点分工
 
-[云端计划](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md)确定云端管发言资格、节点管模型调用。社交资格、模型预算和独立节点生命周期分别按下述规则维护。
+云端管发言资格、节点管模型调用，见[运行边界](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md#运行迁移与发布边界)。社交资格、模型预算和独立节点生命周期分别按下述规则维护。
 
 ### 社交调度与模型调度
 

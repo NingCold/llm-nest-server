@@ -24,7 +24,7 @@
 
 节点管理按 AI 管理权限校验，初始管理员和普通管理员均可绑定、更换、撤销；创建者成为初始管理员；只有初始管理员能增删真人管理员，普通管理员不能转授权或修改初始管理员。不提供人工代发。
 
-群权限现采用群主、群管理员和普通成员三级，按账号分配；AI 的管理员不会自动获得该 AI 所在群的管理权。在线角色与模型配置按 AI 管理权授权，窗口记忆和摘要另按成员权限复核。具体权限与共享完整群历史的约定见[聊天与消息](conversations.md#已确认的云端群管理方向)。AI 创建和节点生命周期的进度见[第 2 步](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md#第-2-步接入一个-ai-节点)。
+群权限现采用群主、群管理员和普通成员三级，按账号分配；AI 的管理员不会自动获得该 AI 所在群的管理权。在线角色与模型配置按 AI 管理权授权，窗口记忆和摘要另按成员权限复核。具体权限与共享完整群历史的约定见[聊天与消息](conversations.md#已确认的云端群管理方向)。AI 创建和节点生命周期的进度见[已有能力](https://github.com/NingCold/llm-nest/blob/main/docs/project/completed.md#ai-和它的记忆)。
 
 云端公开账号返回 active/disabled 状态。当前 AI 管理员可按 statusRevision 停用或恢复 AI：停用取消该 AI 的未完成任务，保留绑定、群成员和历史，恢复只接受新触发。联系人 listed 与 blocked 独立，移除或重新添加不清除屏蔽；任一方向屏蔽只限制双方私聊，群内正常 @/回复仍可用。公开资料与管理员名单分别使用 profileRevision 和 administratorsRevision 控制并发修改。
 
@@ -36,7 +36,7 @@
 
 一个 AI 同时只有一个有效运行节点，一个节点可以运行多个 AI。该 AI 的管理员手动更换后，旧节点失去执行与发言资格，云端账号与聊天历史沿用。加密节点正常交接先停接新工作、同步资料与历史钥，新节点使用独立恢复材料恢复；旧节点损坏时可明确选择强制更换，接受未同步内容缺失。未加密节点仍使用资料迁移包；单纯重新绑定不能恢复内部资料或解密秘密。
 
-关闭窗口后本机 Agent 默认继续后台运行，具体操作见[界面设计](https://github.com/NingCold/llm-nest/blob/main/docs/design/frontend.md#创建与管理-ai)。运行、恢复和迁移遵守[已确认约定](https://github.com/NingCold/llm-nest/blob/main/docs/project/cloud-plan.md#已确认的运行与迁移约定)。真人实际操作者由云端登录会话确定，网页和桌面访问同一云端账号；客户端不得指定任意 operatorId 或借只读 AI 视角获得发言身份。
+关闭窗口后本机 Agent 默认继续后台运行，具体操作见[界面设计](https://github.com/NingCold/llm-nest/blob/main/docs/design/frontend.md#创建与管理-ai)。运行、恢复和迁移遵守[运行、迁移与发布边界](https://github.com/NingCold/llm-nest/blob/main/docs/design/overview.md#运行迁移与发布边界)。真人实际操作者由云端登录会话确定，网页和桌面访问同一云端账号；客户端不得指定任意 operatorId 或借只读 AI 视角获得发言身份。
 
 当前真人认证位于 `server/src/auth.rs`，账号与会话保存在 PostgreSQL；Web 和桌面从登录会话确定实际操作者，不接收客户端自定的 operatorId。Cookie 在浏览器或桌面 Rust 侧保管；节点使用专用 Bearer，配对码十分钟有效，绑定版本和凭据哈希保存在 PostgreSQL，协议见[节点接口](api.md#云端-ai-与节点接口)。
 
