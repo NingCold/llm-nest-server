@@ -14,6 +14,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 #[path = "crypto_authority.rs"]
 mod authority;
+pub(crate) use authority::command as device_command;
 pub(crate) type Tx<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 pub(crate) struct Actor {
     pub id: Uuid,
@@ -239,12 +240,12 @@ async fn request(
     nodes::lock(&mut tx).await?;
     let a = actor(&s, &h, &mut tx).await?;
     device(&mut tx, &a, &v.device_id).await?;
-    if v.kind == "keysBackup" {
+    if matches!(v.kind.as_str(), "keysBackup" | "signatures") {
         authority::proof(
             &mut tx,
             &a,
             &v.device_id,
-            "keysBackup",
+            &v.kind,
             &v.body,
             v.proof.as_deref(),
             true,
@@ -281,7 +282,7 @@ async fn request(
                     sqlx::query("UPDATE cloud_crypto_devices SET authorized=true WHERE account_id=$1 AND device_id=$2").bind(a.id).bind(&v.device_id).execute(&mut *tx).await?;
                 }
             }
-            signing(&mut tx, &a, &v.body).await?
+            signing(&mut tx, &a, &v.device_id, &v.body).await?
         }
         "signatures" => signatures(&mut tx, &a, &v.body).await?,
         "keysBackup" => backup(&mut tx, &a, &v.body).await?,
@@ -302,21 +303,18 @@ async fn counts(tx: &mut Tx<'_>, a: Uuid, d: &str) -> Result<Value> {
     let n:i64=sqlx::query_scalar("SELECT count(*) FROM cloud_crypto_one_time_keys WHERE account_id=$1 AND device_id=$2 AND NOT fallback").bind(a).bind(d).fetch_one(&mut **tx).await?;
     Ok(json!({"signed_curve25519":n}))
 }
-fn preserve_signatures(old: Option<&Value>, new: &Value) -> Value {
-    let mut out = new.clone();
-    if let Some(signatures) = old
-        .and_then(|v| v.get("signatures"))
-        .and_then(Value::as_object)
-    {
-        for (user, keys) in signatures {
-            for (key, signature) in keys.as_object().into_iter().flatten() {
-                if out["signatures"][user].get(key).is_none() {
-                    out["signatures"][user][key] = signature.clone();
-                }
-            }
-        }
+// Pre-upgrade directory rows may contain malformed signature maps. Repair only the verified
+// slot; endorsements from other accounts stay intact.
+fn put_signature(record: &mut Value, signer: &str, id: &str, sig: &Value) {
+    let signatures = &mut record["signatures"];
+    if !signatures.is_object() {
+        *signatures = json!({});
     }
-    out
+    let group = &mut signatures[signer];
+    if !group.is_object() {
+        *group = json!({});
+    }
+    group[id] = sig.clone();
 }
 async fn upload(tx: &mut Tx<'_>, a: &Actor, d: &str, v: &Value) -> Result<Value> {
     if let Some(keys) = v.get("device_keys") {
@@ -333,15 +331,45 @@ async fn upload(tx: &mut Tx<'_>, a: &Actor, d: &str, v: &Value) -> Result<Value>
         if old.as_ref().is_some_and(|o| o["keys"] != keys["keys"]) {
             return Err(AppError::conflict("设备身份密钥已变化，请登记新设备"));
         }
+        let body = authority::unsigned(keys, true)?;
+        let own = format!("ed25519:{d}");
+        let ed = field(&keys["keys"], &own)?;
+        authority::check_curve(field(&keys["keys"], &format!("curve25519:{d}"))?)?;
+        let signature = &keys["signatures"][matrix_user(a.id)][&own];
+        authority::signature_on(&body, ed, signature)?;
+        // keysUpload is a self-assertion, not a source of third-party endorsements.
+        let mut verified = match old {
+            Some(previous) => {
+                let old_body = authority::unsigned(&previous, true)?;
+                if old_body == body {
+                    previous
+                } else if authority::signature_on(
+                    &old_body,
+                    ed,
+                    &previous["signatures"][matrix_user(a.id)][&own],
+                )
+                .is_err()
+                {
+                    // Repair an old invalid signed object; retain only signatures over the repaired body.
+                    body
+                } else {
+                    return Err(AppError::conflict("设备公钥记录已固定"));
+                }
+            }
+            None => body,
+        };
+        put_signature(&mut verified, &matrix_user(a.id), &own, signature);
         sqlx::query(
             "UPDATE cloud_crypto_devices SET device_keys=$3 WHERE account_id=$1 AND device_id=$2",
         )
         .bind(a.id)
         .bind(d)
-        .bind(preserve_signatures(old.as_ref(), keys))
+        .bind(verified)
         .execute(&mut **tx)
         .await?;
     }
+    let (_, signer) = authority::record(tx, a.id, d).await?;
+    let signer_id = format!("ed25519:{d}");
     for (name, fallback) in [("one_time_keys", false), ("fallback_keys", true)] {
         if let Some(keys) = v.get(name) {
             for (id, data) in keys
@@ -351,6 +379,11 @@ async fn upload(tx: &mut Tx<'_>, a: &Actor, d: &str, v: &Value) -> Result<Value>
                 if !id.starts_with("signed_curve25519:") {
                     return Err(AppError::bad("公钥算法不支持"));
                 }
+                authority::signature_on(
+                    &authority::unsigned(data, true)?,
+                    signer.as_deref().ok_or_else(AppError::forbidden)?,
+                    &data["signatures"][matrix_user(a.id)][&signer_id],
+                )?;
                 if fallback {
                     sqlx::query("DELETE FROM cloud_crypto_one_time_keys WHERE account_id=$1 AND device_id=$2 AND fallback AND key_id<>$3").bind(a.id).bind(d).bind(id).execute(&mut **tx).await?;
                 }
@@ -592,29 +625,123 @@ async fn to_device(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
     }
     Ok(json!({}))
 }
-async fn signing(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
+async fn signing(tx: &mut Tx<'_>, a: &Actor, device_id: &str, v: &Value) -> Result<Value> {
     let old = sqlx::query("SELECT * FROM cloud_crypto_signing_keys WHERE account_id=$1")
         .bind(a.id)
         .fetch_optional(&mut **tx)
         .await?;
-    let mut merged = v.clone();
-    for k in ["master_key", "self_signing_key", "user_signing_key"] {
-        if let Some(key) = v.get(k) {
-            if key["user_id"] != matrix_user(a.id) {
-                return Err(AppError::forbidden());
-            }
-            let previous = old.as_ref().and_then(|r| r.get::<Option<Value>, _>(k));
-            if previous
-                .as_ref()
-                .is_some_and(|old| old["keys"] != key["keys"])
+    let previous_master = old
+        .as_ref()
+        .and_then(|r| r.get::<Option<Value>, _>("master_key"));
+    let master = v
+        .get("master_key")
+        .or(previous_master.as_ref())
+        .ok_or_else(|| AppError::bad("缺少账号主签名钥"))?;
+    let (mid, mpub) = authority::signer_key(master, "master", a.id)?;
+    let mut merged = json!({});
+    for (column, usage) in [
+        ("master_key", "master"),
+        ("self_signing_key", "self_signing"),
+        ("user_signing_key", "user_signing"),
+    ] {
+        if let Some(key) = v.get(column) {
+            authority::signer_key(key, usage, a.id)?;
+            let unsigned = authority::unsigned(key, true)?;
+            let previous = old.as_ref().and_then(|r| r.get::<Option<Value>, _>(column));
+            if let Some(prev) = &previous
+                && authority::unsigned(prev, true)? != unsigned
             {
                 return Err(AppError::conflict("加密身份已存在，请恢复原身份"));
             }
-            merged[k] = preserve_signatures(previous.as_ref(), key);
+            let signatures = &key["signatures"][matrix_user(a.id)];
+            let mut verified = previous.unwrap_or_else(|| unsigned.clone());
+            if let Some(sig) = signatures.get(mid) {
+                authority::signature_on(&unsigned, mpub, sig)?;
+                put_signature(&mut verified, &matrix_user(a.id), mid, sig);
+            } else if usage != "master" {
+                // The recovery SDK republishes unchanged public subkeys without endorsements.
+                // A first upload cannot borrow this path: it has no verified stored signature.
+                authority::signature_on(
+                    &unsigned,
+                    mpub,
+                    &verified["signatures"][matrix_user(a.id)][mid],
+                )?;
+            }
+            let kid = format!("ed25519:{device_id}");
+            if usage == "master"
+                && let Some(sig) = signatures.get(&kid)
+            {
+                let (_, k) = authority::record(tx, a.id, device_id).await?;
+                authority::signature_on(
+                    &unsigned,
+                    k.as_deref().ok_or_else(AppError::forbidden)?,
+                    sig,
+                )?;
+                put_signature(&mut verified, &matrix_user(a.id), &kid, sig);
+            }
+            merged[column] = verified;
         }
     }
     sqlx::query("INSERT INTO cloud_crypto_signing_keys(account_id,master_key,self_signing_key,user_signing_key) VALUES($1,$2,$3,$4) ON CONFLICT(account_id) DO UPDATE SET master_key=coalesce($2,cloud_crypto_signing_keys.master_key),self_signing_key=coalesce($3,cloud_crypto_signing_keys.self_signing_key),user_signing_key=coalesce($4,cloud_crypto_signing_keys.user_signing_key)").bind(a.id).bind(merged.get("master_key")).bind(merged.get("self_signing_key")).bind(merged.get("user_signing_key")).execute(&mut **tx).await?;
     Ok(json!({}))
+}
+async fn merge_verified(
+    tx: &mut Tx<'_>,
+    a: &Actor,
+    target: Uuid,
+    usage: &str,
+    signed: &Value,
+    old: &mut Value,
+) -> Result<()> {
+    let body = authority::unsigned(old, true)?;
+    if authority::unsigned(signed, true)? != body {
+        return Err(AppError::conflict("签名对象已变化"));
+    }
+    let signer = matrix_user(a.id);
+    let candidates = signed["signatures"][&signer]
+        .as_object()
+        .filter(|m| !m.is_empty())
+        .ok_or_else(AppError::forbidden)?;
+    let roots=sqlx::query("SELECT master_key,self_signing_key,user_signing_key FROM cloud_crypto_signing_keys WHERE account_id=$1").bind(a.id).fetch_optional(&mut **tx).await?;
+    for (kid, sig) in candidates {
+        let id = kid
+            .strip_prefix("ed25519:")
+            .ok_or_else(AppError::forbidden)?;
+        // If this user's signed object includes an existing signature, leave it in place.
+        if old["signatures"][&signer].get(kid) == Some(sig) {
+            continue;
+        }
+        let allowed = match (a.id == target, usage) {
+            (true, "device") => Some(("self_signing_key", "self_signing")),
+            (true, "master") | (true, "self_signing") | (true, "user_signing") => {
+                Some(("master_key", "master"))
+            }
+            (false, "master") => Some(("user_signing_key", "user_signing")),
+            _ => None,
+        };
+        let mut public = None;
+        if let (Some((col, kind)), Some(row)) = (allowed, &roots)
+            && let Some(root) = row.get::<Option<Value>, _>(col)
+            && let Ok((key, pk)) = authority::signer_key(&root, kind, a.id)
+            && key == kid
+        {
+            public = Some(pk.to_owned());
+        }
+        if public.is_none()
+            && a.id == target
+            && (usage == "master" || usage == "device" && signed["device_id"] == id)
+        {
+            let (_, key) = authority::record(tx, a.id, id).await?;
+            public = key;
+        }
+        authority::signature_on(
+            &body,
+            public.as_deref().ok_or_else(AppError::forbidden)?,
+            sig,
+        )?;
+        put_signature(old, &signer, kid, sig);
+    }
+    Ok(())
 }
 async fn signatures(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
     for (user, objects) in v.as_object().ok_or_else(|| AppError::bad("签名无效"))? {
@@ -626,19 +753,9 @@ async fn signatures(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
             .as_object()
             .ok_or_else(|| AppError::bad("签名对象无效"))?
         {
-            let signatures = signed
-                .get("signatures")
-                .and_then(|s| s.get(matrix_user(a.id)))
-                .and_then(Value::as_object)
-                .ok_or_else(|| AppError::bad("缺少当前账号签名"))?;
             let device=sqlx::query_scalar::<_,Option<Value>>("SELECT device_keys FROM cloud_crypto_devices WHERE account_id=$1 AND device_id=$2 AND NOT revoked").bind(aid).bind(id).fetch_optional(&mut **tx).await?.flatten();
             if let Some(mut old) = device {
-                if old["keys"] != signed["keys"] {
-                    return Err(AppError::conflict("签名目标已变化"));
-                }
-                for (key, value) in signatures {
-                    old["signatures"][matrix_user(a.id)][key] = value.clone();
-                }
+                merge_verified(tx, a, aid, "device", signed, &mut old).await?;
                 sqlx::query("UPDATE cloud_crypto_devices SET device_keys=$3 WHERE account_id=$1 AND device_id=$2").bind(aid).bind(id).bind(old).execute(&mut **tx).await?;
             } else {
                 let row=sqlx::query("SELECT master_key,self_signing_key,user_signing_key FROM cloud_crypto_signing_keys WHERE account_id=$1").bind(aid).fetch_optional(&mut **tx).await?;
@@ -648,9 +765,12 @@ async fn signatures(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
                         if let Some(mut old) = row.get::<Option<Value>, _>(column)
                             && old["keys"] == signed["keys"]
                         {
-                            for (key, value) in signatures {
-                                old["signatures"][matrix_user(a.id)][key] = value.clone();
+                            let usage = column.strip_suffix("_key").unwrap();
+                            let (kid, _) = authority::signer_key(&old, usage, aid)?;
+                            if kid.strip_prefix("ed25519:") != Some(id.as_str()) {
+                                return Err(AppError::forbidden());
                             }
+                            merge_verified(tx, a, aid, usage, signed, &mut old).await?;
                             let query = format!(
                                 "UPDATE cloud_crypto_signing_keys SET {column}=$2 WHERE account_id=$1"
                             );
@@ -1077,7 +1197,7 @@ pub(crate) async fn envelope(
     {
         return Err(AppError::bad("密文路由或格式无效"));
     }
-    device(tx, a, &sealed.device_id).await
+    authority::verify_envelope(tx, a, sealed).await
 }
 #[allow(clippy::too_many_arguments)] // Authenticated message routing is one protocol boundary.
 pub(crate) async fn content(
@@ -1194,7 +1314,7 @@ async fn enable(
                     return Err(AppError::conflict("AI节点尚未具备密文能力"));
                 }
             }
-            let keys:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND device_keys IS NOT NULL AND (node_id IS NULL OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version)))").bind(member).fetch_one(&mut *tx).await?;
+            let keys:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND device_keys IS NOT NULL AND ((node_id IS NULL AND authorized) OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version)))").bind(member).fetch_one(&mut *tx).await?;
             if !keys {
                 return Err(AppError::conflict("双方尚未准备加密设备"));
             }
@@ -1218,4 +1338,4 @@ async fn enable(
 }
 #[cfg(test)]
 #[path = "crypto_tests.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -28,15 +28,93 @@ pub(super) fn verify(
     let mut payload = json!([account, operation, body]);
     payload.sort_all_objects();
     let statement = format!("llmn.authority.v1\n{payload}");
+    verify_bytes(key, statement.as_bytes(), signature)
+}
+
+fn verify_bytes(key: &str, statement: &[u8], signature: &str) -> Result<()> {
     let verifier = VerifyingKey::from_bytes(&decode(key)?).map_err(|_| AppError::forbidden())?;
     verifier
-        .verify_strict(
-            statement.as_bytes(),
-            &Signature::from_bytes(&decode(signature)?),
-        )
+        .verify_strict(statement, &Signature::from_bytes(&decode(signature)?))
         .map_err(|_| AppError::forbidden())
 }
 
+// Matrix directory objects exclude unsigned metadata; application envelopes sign every field except signatures.
+pub(super) fn unsigned(value: &Value, directory: bool) -> Result<Value> {
+    let mut out = value.clone();
+    let object = out
+        .as_object_mut()
+        .ok_or_else(|| AppError::bad("签名对象无效"))?;
+    object.remove("signatures");
+    if directory {
+        object.remove("unsigned");
+    }
+    out.sort_all_objects();
+    Ok(out)
+}
+pub(super) fn signature_on(body: &Value, key: &str, signature: &Value) -> Result<()> {
+    verify_bytes(
+        key,
+        &serde_json::to_vec(body).map_err(|_| AppError::bad("签名正文无效"))?,
+        signature.as_str().ok_or_else(AppError::forbidden)?,
+    )
+}
+pub(super) fn signer_key<'a>(
+    key: &'a Value,
+    usage: &str,
+    account: Uuid,
+) -> Result<(&'a str, &'a str)> {
+    if key["user_id"] != matrix_user(account) || key["usage"] != json!([usage]) {
+        return Err(AppError::bad("交叉签名钥用途无效"));
+    }
+    let keys = key["keys"]
+        .as_object()
+        .filter(|k| k.len() == 1)
+        .ok_or_else(|| AppError::bad("交叉签名钥格式无效"))?;
+    let (id, key) = keys.iter().next().unwrap();
+    let public = key.as_str().ok_or_else(AppError::forbidden)?;
+    decode::<32>(public)?;
+    if id.strip_prefix("ed25519:") != Some(public) {
+        return Err(AppError::bad("交叉签名钥标识无效"));
+    }
+    Ok((id, public))
+}
+pub(super) fn check_curve(encoded: &str) -> Result<()> {
+    decode::<32>(encoded).map(|_| ())
+}
+
+pub(super) async fn verify_envelope(
+    tx: &mut Tx<'_>,
+    a: &Actor,
+    sealed: &connector::crypto::SealedEnvelope,
+) -> Result<()> {
+    let d = &sealed.device_id;
+    device(tx, a, d).await?;
+    let r=sqlx::query("SELECT d.authorized,d.device_keys,k.master_key FROM cloud_crypto_devices d JOIN cloud_crypto_signing_keys k USING(account_id) WHERE d.account_id=$1 AND d.device_id=$2").bind(a.id).bind(d).fetch_optional(&mut **tx).await?.ok_or_else(AppError::forbidden)?;
+    if a.node.is_none() && !r.get::<bool, _>("authorized") {
+        return Err(AppError::forbidden());
+    }
+    let keys: Value = r
+        .get::<Option<Value>, _>("device_keys")
+        .ok_or_else(AppError::forbidden)?;
+    let ed_id = format!("ed25519:{d}");
+    let ed = field(&keys["keys"], &ed_id)?;
+    let curve = field(&keys["keys"], &format!("curve25519:{d}"))?;
+    if sealed.device_keys["ed25519"] != ed
+        || sealed.device_keys["curve25519"] != curve
+        || sealed.content["device_id"] != *d
+        || sealed.content["sender_key"] != curve
+    {
+        return Err(AppError::forbidden());
+    }
+    let master = r
+        .get::<Option<Value>, _>("master_key")
+        .ok_or_else(AppError::forbidden)?;
+    let (master_id, root) = signer_key(&master, "master", a.id)?;
+    let body = unsigned(&json!(sealed), false)?;
+    let signatures = &sealed.signatures[matrix_user(a.id)];
+    signature_on(&body, ed, &signatures[&ed_id])?;
+    signature_on(&body, root, &signatures[master_id])
+}
 pub(super) async fn record(
     tx: &mut Tx<'_>,
     account: Uuid,
@@ -73,7 +151,7 @@ pub(super) async fn proof(
     )
 }
 
-pub(super) async fn command(tx: &mut Tx<'_>, a: &Actor, action: &str, v: &Value) -> Result<()> {
+pub(crate) async fn command(tx: &mut Tx<'_>, a: &Actor, action: &str, v: &Value) -> Result<()> {
     let mut body = v.clone();
     let obj = body.as_object_mut().ok_or_else(AppError::forbidden)?;
     let sig = obj.remove("proof");

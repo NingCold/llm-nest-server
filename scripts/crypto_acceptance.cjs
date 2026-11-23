@@ -75,7 +75,7 @@ async function outgoing(s, r) {
   if (r.type === sdk.RequestType.ToDevice) Object.assign(body, { event_type: r.event_type, txn_id: r.txn_id });
   if (r.type === sdk.RequestType.KeysBackup) body.version = r.version;
   const kind = ['keysUpload', 'keysQuery', 'keysClaim', 'toDevice', 'signatures', 'roomMessage', 'keysBackup'][r.type];
-  const proof = kind === 'keysBackup' ? await deviceProof(s, kind, body) : undefined;
+  const proof = ['keysBackup', 'signatures'].includes(kind) ? await deviceProof(s, kind, body) : undefined;
   const response = await http(s, '/crypto/requests', 'POST', { deviceId: s.device, requestId: r.id || randomUUID(), kind, body, proof });
   if (r.id) await s.machine.markRequestAsSent(r.id, r.type, JSON.stringify(response));
 }

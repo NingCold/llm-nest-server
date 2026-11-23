@@ -1077,18 +1077,21 @@ mod tests {
             .execute(&f.state.pool)
             .await
             .unwrap();
-        let node: Uuid = sqlx::query_scalar("SELECT node_id FROM cloud_ai_bindings WHERE ai_id=$1")
-            .bind(ai)
-            .fetch_one(&f.state.pool)
-            .await
-            .unwrap();
         let mut request = batch(&f, ai, &g);
-        for (index, m) in request.messages.iter_mut().enumerate() {
-            let device = format!("legacy-{index}");
+        for m in &mut request.messages {
             let sender = uid(&m.sender_id).unwrap();
-            sqlx::query("INSERT INTO cloud_crypto_devices(account_id,device_id,node_id,binding_version,device_keys) VALUES($1,$2,$3,$4,'{}')").bind(sender).bind(&device).bind((sender==ai).then_some(node)).bind((sender==ai).then_some(1i64)).execute(&f.state.pool).await.unwrap();
+            let headers = if sender == ai { &h } else { &f.users[0].1 };
             m.text.clear();
-            m.sealed=Some(serde_json::from_value(json!({"version":1,"roomId":format!("!{cid}:llmn"),"sender":format!("@{sender}:llmn"),"deviceId":device,"eventId":format!("${}.1.final",m.id),"deviceKeys":{"ed25519":"public","curve25519":"public"},"signatures":{"account":{"device":"signature"}},"content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"legacy-frozen-ciphertext"}})).unwrap());
+            m.sealed = Some(
+                crate::crypto::tests::signed_outbox_fixture(
+                    &f,
+                    headers,
+                    sender,
+                    cid,
+                    uid(&m.id).unwrap(),
+                )
+                .await,
+            );
         }
         let mut wrong = request.clone();
         wrong.messages[0].audience_revision = Some("0".into());

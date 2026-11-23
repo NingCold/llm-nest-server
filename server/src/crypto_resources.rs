@@ -117,7 +117,7 @@ async fn audience(tx: &mut Tx<'_>, q: &Scope) -> Result<Value> {
     for id in ids {
         let row=sqlx::query("SELECT a.status,b.version FROM accounts a LEFT JOIN cloud_ai_bindings b ON b.ai_id=a.id WHERE a.id=$1").bind(id).fetch_one(&mut **tx).await?;
         let status: String = row.get("status");
-        let devices=sqlx::query("SELECT device_id,node_id,binding_version,device_keys->'keys' AS public_keys FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND device_keys IS NOT NULL AND (node_id IS NULL OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version)) ORDER BY device_id").bind(id).fetch_all(&mut **tx).await?;
+        let devices=sqlx::query("SELECT device_id,node_id,binding_version,device_keys->'keys' AS public_keys FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND device_keys IS NOT NULL AND ((node_id IS NULL AND authorized) OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version)) ORDER BY device_id").bind(id).fetch_all(&mut **tx).await?;
         let keys = devices
             .iter()
             .map(|r| {
@@ -342,6 +342,9 @@ async fn save(
         json!(v.sources)
     };
     if let Some(e) = &v.sealed {
+        if e.device_id != v.device_id {
+            return Err(AppError::forbidden());
+        }
         crypto::envelope(
             &mut tx,
             &a,

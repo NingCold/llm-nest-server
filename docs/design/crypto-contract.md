@@ -20,6 +20,7 @@
 - 发送只向已验证设备分享会话；首次联系人或 AI 身份须核对指纹，变化须重新确认。登录和节点配对不自动完成加密信任。
 - `sealed` 的结构为 `{version:1, roomId, sender, deviceId, eventId, content, deviceKeys, signatures}`；`content` 是 SDK 输出的 `m.room.encrypted` 内容，`deviceKeys` 为设备公开的 `{ed25519,curve25519}`，不含秘密。正文 `text` 在传输与云端存储中为空。
 - 对完整封装去除 `signatures` 后使用 Matrix canonical JSON，再由 SDK `sign` 生成账号主密钥和设备密钥两份签名。接收端先取得已独立核验的账号主公钥，验证主签名，再用其中签认的设备 Ed25519 公钥验证设备签名；同时核对 Curve25519 公钥及设备 ID 与 SDK 密文一致。Web 验签使用 `@noble/curves`，Rust 使用 SDK 的 vodozemac；不自行实现签名算法。
+- 所有新增密文写入由服务端核对真人设备已准入或节点绑定有效，并校验固定设备的 Ed25519、Curve25519、账号主钥及完整封装双签。封装内外必须指向同一设备和发送公钥。只读旧历史不要求原设备今天仍获准入。
 - 这两份签名对新消息和恢复历史都必需。Matrix 标准历史备份导入后不保留原 Olm 投递的发送设备认证，因此 SDK 的 `CrossSigned` 解密设置会拒绝这种恢复记录。应用先完成上述强制双签核验，再由 SDK 检查密文并解密；不修改 SDK 的 imported 状态、不假造原投递证明，也没有缺签名时的降级路径。账户主密钥尚未核验或恢复秘密未获授权时不能发送或读回内容。
 - SDK 加密事件类型固定为 `com.llmn.content.v1`。内部正文为 `{version:1, server, kind, conversationId, messageId, senderId, revision, text, replyTo, mentions, runId, sequence}`。`server` 是标准化 HTTPS origin；`kind` 为 `message`、`delta`、`resource` 或 `contactIntent`；附件、来源和窗口版本绑定见下文。未适用字段用 null，mentions 用数组。分页和预览先核对请求指定的窗口，再将签名正文与消息标识、修订和流片段逐项核对。同一站点、账号和窗口的强制加密起点只可提前；旧历史完成转换后，不再接受任何位置的明文。创建消息必须由发送方先生成 messageId；事件 ID 使用 `$<messageId>.<revision>.<sequence或final>`。发送前读到的窗口 revision 可作为签名内层的受众版本；云端 position 和服务器生成时间不伪装为发送端已签认的值。
 - 所有发送先由 SDK 保存会话进展，再将完整请求和密文持久保存，最后联网。崩溃可能浪费一个未发送的会话序号，但不得发出未保存的密文；重试不重新加密。最终结果与累计流式片段均受保护。
@@ -42,7 +43,7 @@
 | `GET /crypto/backup/keys` | 当前版本的标准 `{rooms:{roomId:{sessions:...}}}`；keysBackup 上传同一形状，携带 version |
 | `GET/PUT /crypto/recovery` | `{version, ciphertext}`；PUT 另带 deviceId、expectedVersion，原版本与相同密文重试幂等，旧恢复版本不覆盖新版本。ciphertext 为 base64 的 Matrix 附件加密字节；恢复秘密绝不在这个对象内 |
 
-keysUpload、keysQuery、keysClaim、signatures、signingKeys 的 body 为标准 Matrix 请求。toDevice 使用 `{event_type,txn_id,messages}`；Web 从 SDK 请求补齐前两项。密文按 requestId 去重，签名上传保留既有签名。
+keysUpload、keysQuery、keysClaim、signatures、signingKeys 的 body 为标准 Matrix 请求。toDevice 使用 `{event_type,txn_id,messages}`；Web 从 SDK 请求补齐前两项。密文按 requestId 去重。设备初次上传必须自签包括算法、Ed25519 与 Curve25519 公钥的完整记录；一次性和后备钥也用固定设备钥签名。重复上传仅更新有效的自签，不能覆盖其他端的背书。独立的 signatures 请求以库中规范对象为准：同账号设备由自签名钥背书，核验联系人的账号主钥用提交者的用户签名钥；新增或替换的签名必须可验证。
 
 管理员历史授权只含 AI 当前加入的加密聊天的历史钥。Agent 单独核验管理员设备；角色、记忆、摘要和摘要设置仍按各自受众分发。请求另带 `llmn_purpose:"aiAdminHistory"`、`llmn_chat_revisions:{窗口UUID:修订字符串}` 与 `llmn_audience_revision`（profile 受众修订）。服务器在入队、请求重放及收件时核对授权与修订；路由字段不交给 Matrix SDK。
 
@@ -50,7 +51,7 @@ keysUpload、keysQuery、keysClaim、signatures、signingKeys 的 body 为标准
 
 **真人恢复授权。** 首次建立身份时，设备用自己的 Ed25519 私钥签署 `signingKeys`；服务端仅在账号没有既有加密链时固定首台设备。后续准入绑定目标的不可更换公钥。未准入的设备可供人工核对，但不向 Matrix 目录发布它的交叉签名，也不接收新投递的 Olm 密文。密钥备份上传、轮换、恢复资料写入和撤销都需要当前已准入设备的单签。已退役的备份版本永不接收新会话；历史备份、密钥和恢复密文均可用 `?version=UUID` 只读访问。
 
-签名输入为 UTF-8 的 `llmn.authority.v1\n`（末尾为换行）加规范 JSON 数组 `[账号UUID, 操作, [签名设备ID, 载荷]]`。操作是 `signingKeys`、`keysBackup`、`backup`、`recovery`、`enroll` 或 `revoke`；前两者载荷为 Matrix 请求的 body，其余为去掉 proof 的完整请求对象。v2 文件把独立的 Ed25519 准入种子保存在文件里，云端只保公钥 `enrollmentKey`。文件恢复时签 `[账号UUID,"recover",[恢复版本,目标设备ID,目标Ed指纹]]`，目标设备再以 `accept` 签同一授权；两者沿用同一域前缀。普通设备间的 Olm 恢复包不包含离线准入种子。节点继续使用绑定的 Bearer 身份。
+签名输入为 UTF-8 的 `llmn.authority.v1\n`（末尾为换行）加规范 JSON 数组 `[账号UUID, 操作, [签名设备ID, 载荷]]`。操作是 `signingKeys`、`signatures`、`keysBackup`、`backup`、`recovery`、`enroll`、`revoke`、`history.begin` 或 `history.finish:<转换ID>`；前三者载荷为 Matrix 请求的 body，其余为去掉 proof 的完整请求对象。v2 文件把独立的 Ed25519 准入种子保存在文件里，云端只保公钥 `enrollmentKey`。文件恢复时签 `[账号UUID,"recover",[恢复版本,目标设备ID,目标Ed指纹]]`，目标设备再以 `accept` 签同一授权；两者沿用同一域前缀。普通设备间的 Olm 恢复包不包含离线准入种子。节点继续使用绑定的 Bearer 身份。
 
 撤销后，健康端从旧版本补齐可恢复的历史，再生成全新的 SDK 备份密钥和 v2 文件。用户保存并确认文件后，服务端在同一事务发布新备份与恢复密文。其他健康端从该文件或可信端取得新一代秘密；只凭目录返回的公钥不会上传历史钥。[升级 v1 链](../legacy-device-recovery.md)。
 
@@ -74,7 +75,7 @@ Windows 原生端通过当前用户 DPAPI 保护保存的口令，解锁时经�
 
 ## 聊天启用
 
-`POST /chat/conversations/{id}/encryption` 携带 `{deviceId,requestId,expectedConversationRevision}`，不可逆启用现有窗口。私聊由成员开启，群聊由群主或群管理员开启。响应和窗口 DTO 包含 `encryption:{version:1,activationPosition}`。发送端先确保当前每个成员至少有一台已核验的设备，并准备恢复材料；缺少时指出需要完成核验的成员，不静默跳过。服务端检查当前成员、窗口版本、有效设备与 AI 节点能力。已有原文明确标为尚未迁移，不悄悄改写。启用后的消息、修改、AI delta/result、约定、同机补传与资料管理拒绝明文。
+`POST /chat/conversations/{id}/encryption` 携带 `{deviceId,requestId,expectedConversationRevision}`，不可逆启用现有窗口。私聊由成员开启，群聊由群主或群管理员开启。响应和窗口 DTO 包含 `encryption:{version:1,activationPosition}`。发送端先确保当前每个成员至少有一台已核验的设备，并准备恢复材料；缺少时指出需要完成核验的成员，不静默跳过。服务端检查当前成员、窗口版本及可接收密钥的设备：真人须有已准入设备，AI 须有已绑定且支持密文的节点。已有原文明确标为尚未迁移，不悄悄改写。启用后的消息、修改、AI delta/result、约定、同机补传与资料管理拒绝明文。
 
 新密文绑定发送时的 `conversationRevision`，服务器保存对应的 `audienceRevision`。接收端核对两者；读取旧消息时不拿现在的群版本替换发送时的版本。加密发送和编辑携带 `expectedConversationRevision`，成员名单改变后，按旧名单准备的请求不能作为新消息提交。已完成命令仍返回当前权威记录，不重复创建消息。
 
@@ -131,7 +132,7 @@ Windows 原生端通过当前用户 DPAPI 保护保存的口令，解锁时经�
 
 附件先写新的密文存储代次，再在事务中切换读取位置；旧明文文件作为受限备份保留，旧附件元数据留在 cloud_history_attachment_backups，记录位置与清理计划，实际删除另行确认。服务端数据库与附件、节点工作库也须有一致备份；普通聊天导出不能替代这些备份。
 
-`POST /{id}/finish` 只在全部项目转换、当前权限仍有效且完成独立恢复验读后关闭转换入口，并将 `encryption.historyComplete` 设为 true、激活位置设为 0。独立验读使用全新临时 SDK 实例和恢复材料，不借用当前活动设备已经持有的密钥；验读清单覆盖消息、约定及附件，并重建转换前记录与附件摘要，比对 sourceDigest；有效签名但内容不同也不能完成。恢复秘密始终留在授权端，云端只接受验读确认摘要。
+`POST /{id}/finish` 只在全部项目转换、当前权限仍有效且完成独立恢复验读后关闭转换入口，并将 `encryption.historyComplete` 设为 true、激活位置设为 0。独立验读使用全新临时 SDK 实例和恢复材料，不借用当前活动设备已经持有的密钥；验读清单覆盖消息、约定及附件，并重建转换前记录与附件摘要，比对 sourceDigest；有效签名但内容不同也不能完成。恢复秘密留在授权端。开始时的备份确认与完成时的验读确认均须由当前准入设备签署；签名绑定请求 ID、具体窗口或转换 ID 及确认摘要。云端验证签名，不代替设备解密。
 
 节点声明 `historyMigrationV1` 能力后才能处理迁移历史。旧节点资料提供单独的预览、原意图持久化和 CAS 发布入口；保留来源与遗忘墓碑，不调用模型补造旧摘要。角色、记忆、摘要和设置均同步完成后，才算资料可交接。未确认的本机发送或执行必须先按原规则解决，不能用迁移重新加密未知请求或重做模型调用。
 

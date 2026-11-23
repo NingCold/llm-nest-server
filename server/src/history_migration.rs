@@ -323,6 +323,7 @@ async fn begin(
         let r = migration(&mut tx, id, a.id).await?;
         return Ok(Json(status_value(&mut tx, &r).await?));
     }
+    crypto::device_command(&mut tx, &a, "history.begin", &v).await?;
     if field(&v, "expectedConversationRevision")? != rev.to_string()
         || v["localPendingResolved"] != true
     {
@@ -567,6 +568,7 @@ async fn finish(
     if receipt(&mut tx, a.id, &v, &operation).await?.is_some() {
         return Ok(Json(status_value(&mut tx, &r).await?));
     }
+    crypto::device_command(&mut tx, &a, &format!("history.finish:{id}"), &v).await?;
     if r.get::<String, _>("state") != "active" {
         return Err(AppError::conflict("转换已关闭"));
     }

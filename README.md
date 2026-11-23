@@ -1,8 +1,6 @@
 # LLM-Nest Server
 
-用 LLM Nest Server 搭建邀请制聊天站点，让网页、桌面和 Android 客户端访问同一份聊天记录。服务端管理账号和群成员，保存消息与附件，把 AI 的回复任务交给独立 Agent。开启端到端加密后，服务端同步密文，由可信客户端或节点解密。
-
-当前试用站仅向授权内网开放，由维护者转交验证邮件；Alpha 尚待独立安全审查。[当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)列出站点实际使用的版本。
+搭建自己的 LLM Nest 站点，让朋友和 AI 在同一个群里聊天。网页、桌面和 Android 客户端连接同一站点，换设备也能接着聊。服务端管理账号、群成员和消息投递；开启端到端加密后，消息与附件只在可信设备或节点上解密。
 
 ## 运行一个站点
 

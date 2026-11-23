@@ -38,6 +38,60 @@ impl Api {
         v["proof"] = json!(self.sig(v["deviceId"].as_str().unwrap(), account, action, &v));
         v
     }
+    fn ensure_key(&self, id: &str) {
+        self.keys
+            .lock()
+            .unwrap()
+            .entry(id.to_owned())
+            .or_insert_with(|| SigningKey::from_bytes(&rand::random()));
+    }
+    fn sign_object(&self, secret: &str, actor: Uuid, kid: &str, v: &mut Value) {
+        let mut body = v.clone();
+        body.as_object_mut().unwrap().remove("signatures");
+        body.sort_all_objects();
+        let signature = self.keys.lock().unwrap()[secret].sign(body.to_string().as_bytes());
+        v["signatures"][matrix_user(actor)][format!("ed25519:{kid}")] =
+            json!(STANDARD_NO_PAD.encode(signature.to_bytes()));
+    }
+    fn device_keys(&self, a: Uuid, d: &str) -> Value {
+        let ed = self.pubkey(d);
+        let curve = STANDARD_NO_PAD.encode(Sha256::digest(ed.as_bytes()));
+        let mut v = json!({"user_id":matrix_user(a),"device_id":d,"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{format!("ed25519:{d}"):ed,format!("curve25519:{d}"):curve}});
+        self.sign_object(d, a, d, &mut v);
+        v
+    }
+    fn cross_keys(&self, a: Uuid, d: &str) -> Value {
+        let master = format!("master:{a}");
+        self.ensure_key(&master);
+        let mp = self.pubkey(&master);
+        let mut body = json!({});
+        for kind in ["master", "self_signing", "user_signing"] {
+            let id = format!("{kind}:{a}");
+            self.ensure_key(&id);
+            let pk = self.pubkey(&id);
+            let mut key = json!({"user_id":matrix_user(a),"usage":[kind],"keys":{format!("ed25519:{pk}"):pk}});
+            self.sign_object(&master, a, &mp, &mut key);
+            if kind == "master" {
+                self.sign_object(d, a, d, &mut key);
+            }
+            body[format!("{kind}_key")] = key;
+        }
+        body
+    }
+    fn sign_sealed(&self, v: &mut Value) {
+        let a = account(v["sender"].as_str().unwrap()).unwrap();
+        let d = v["deviceId"].as_str().unwrap().to_owned();
+        let master = format!("master:{a}");
+        self.sign_object(&d, a, &d, v);
+        self.sign_object(&master, a, &self.pubkey(&master), v);
+    }
+    fn sealed(&self, a: Uuid, d: &str, cid: Uuid, mid: Uuid, rev: u32) -> Value {
+        let ed = self.pubkey(d);
+        let curve = STANDARD_NO_PAD.encode(Sha256::digest(ed.as_bytes()));
+        let mut v = json!({"version":1,"roomId":format!("!{cid}:llmn"),"sender":matrix_user(a),"deviceId":d,"eventId":format!("${mid}.{rev}.final"),"deviceKeys":{"ed25519":ed,"curve25519":curve},"content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"server-persistence-test-only","session_id":"opaque-session","sender_key":curve,"device_id":d}});
+        self.sign_sealed(&mut v);
+        v
+    }
     async fn call(&self, h: &HeaderMap, method: Method, path: &str, v: Value) -> (u16, Value) {
         let r = Client::new()
             .request(method, format!("{}/api{path}", self.url))
@@ -266,12 +320,13 @@ async fn pending(api: &Api, h: &HeaderMap, aid: Uuid) -> String {
         json!({"deviceId":d,"name":"fixture device"}),
     )
     .await;
-    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"requestId":Uuid::new_v4(),"kind":"keysUpload","body":{"device_keys":{"user_id":matrix_user(aid),"device_id":d,"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{format!("ed25519:{d}"):api.pubkey(&d),"curve25519:test":"opaque-public","ed25519:test":"opaque-public"},"signatures":{matrix_user(aid):{"ed25519:test":"opaque-signature"}}}}})).await;
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"requestId":Uuid::new_v4(),"kind":"keysUpload","body":{"device_keys":api.device_keys(aid,&d)}})).await;
     d
 }
 async fn registered(api: &Api, h: &HeaderMap, aid: Uuid) -> String {
     let d = pending(api, h, aid).await;
     if h.contains_key("authorization") {
+        api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"requestId":Uuid::new_v4(),"kind":"signingKeys","body":api.cross_keys(aid,&d)})).await;
         return d;
     }
     let directory = api.ok(h, Method::GET, "/crypto/devices", Value::Null).await;
@@ -303,12 +358,21 @@ async fn registered(api: &Api, h: &HeaderMap, aid: Uuid) -> String {
             return d;
         }
     }
-    let body = json!({"master_key":{"user_id":matrix_user(aid),"keys":{"ed25519:fixture-master":"fixture-master"}}});
+    let body = api.cross_keys(aid, &d);
     api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"kind":"signingKeys","requestId":Uuid::new_v4(),"proof":api.sig(&d,aid,"signingKeys",&body),"body":body})).await;
     d
 }
-fn sealed(a: Uuid, d: &str, cid: Uuid, mid: Uuid, rev: u32) -> Value {
-    json!({"version":1,"roomId":format!("!{cid}:llmn"),"sender":matrix_user(a),"deviceId":d,"eventId":format!("${mid}.{rev}.final"),"deviceKeys":{"ed25519":"opaque-public","curve25519":"opaque-public"},"signatures":{matrix_user(a):{format!("ed25519:{d}"):"opaque-signature"}},"content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"server-persistence-test-only","session_id":"opaque-session","sender_key":"opaque-public","device_id":d}})
+/// Build a frozen, genuinely signed envelope through the same admission API as a live device.
+pub(crate) async fn signed_outbox_fixture(
+    f: &Fixture,
+    headers: &HeaderMap,
+    sender: Uuid,
+    cid: Uuid,
+    mid: Uuid,
+) -> connector::crypto::SealedEnvelope {
+    let api = Api::new(f).await;
+    let device = registered(&api, headers, sender).await;
+    serde_json::from_value(api.sealed(sender, &device, cid, mid, 1)).unwrap()
 }
 #[tokio::test]
 async fn matrix_transport_is_scoped_deduplicated_and_revocable() {
@@ -321,17 +385,20 @@ async fn matrix_transport_is_scoped_deduplicated_and_revocable() {
     conversation(&f, *a, *b).await;
     let da = registered(&api, ha, *a).await;
     let db = registered(&api, hb, *b).await;
-    api.ok(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"cross-sign-device","kind":"signatures","body":{matrix_user(*a):{da.clone():{"keys":{format!("ed25519:{da}"):api.pubkey(&da),"curve25519:test":"opaque-public","ed25519:test":"opaque-public"},"signatures":{matrix_user(*a):{"ed25519:self-signing":"cross-signature"}}}}}})).await;
+    let mut device = api.device_keys(*a, &da);
+    let ssk = format!("self_signing:{a}");
+    let signer = api.pubkey(&ssk);
+    api.sign_object(&ssk, *a, &signer, &mut device);
+    let body = json!({matrix_user(*a):{da.clone():device.clone()}});
+    api.ok(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"cross-sign-device","kind":"signatures","body":body,"proof":api.sig(&da,*a,"signatures",&body)})).await;
     let signed=api.ok(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"query-signed","kind":"keysQuery","body":{"device_keys":{matrix_user(*a):[da.clone()]}}})).await;
     assert_eq!(
-        signed["device_keys"][matrix_user(*a)][&da]["signatures"][matrix_user(*a)]["ed25519:test"],
-        "opaque-signature"
+        signed["device_keys"][matrix_user(*a)][&da]["signatures"],
+        device["signatures"]
     );
-    assert_eq!(
-        signed["device_keys"][matrix_user(*a)][&da]["signatures"][matrix_user(*a)]["ed25519:self-signing"],
-        "cross-signature"
-    );
-    api.ok(hb,Method::POST,"/crypto/requests",json!({"deviceId":db,"requestId":"otk","kind":"keysUpload","body":{"one_time_keys":{"signed_curve25519:1":{"key":"one-time-public","signatures":{}}}}})).await;
+    let mut one_time = json!({"key":"one-time-public"});
+    api.sign_object(&db, *b, &db, &mut one_time);
+    api.ok(hb,Method::POST,"/crypto/requests",json!({"deviceId":db,"requestId":"otk","kind":"keysUpload","body":{"one_time_keys":{"signed_curve25519:1":one_time}}})).await;
     let claim = json!({"deviceId":da,"requestId":"claim","kind":"keysClaim","body":{"one_time_keys":{matrix_user(*b):{db.clone():"signed_curve25519"}}}});
     let claimed = api
         .ok(ha, Method::POST, "/crypto/requests", claim.clone())
@@ -395,6 +462,189 @@ async fn matrix_transport_is_scoped_deduplicated_and_revocable() {
     f.close().await;
 }
 #[tokio::test]
+async fn signed_writes_require_current_admission_and_both_pinned_keys() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let api = Api::new(&f).await;
+    let (a, h) = &f.users[0];
+    let device = registered(&api, h, *a).await;
+    let pending = pending(&api, h, *a).await;
+    let cid = Uuid::new_v4();
+    let mid = Uuid::new_v4();
+    let room = format!("!{cid}:llmn");
+    let event = format!("${mid}.1.final");
+    let good = api.sealed(*a, &device, cid, mid, 1);
+    let actor = Actor { id: *a, node: None };
+    let mut tx = f.state.pool.begin().await.unwrap();
+    let validate =
+        |v: Value| serde_json::from_value::<connector::crypto::SealedEnvelope>(v).unwrap();
+    envelope(&mut tx, &actor, &room, &event, &validate(good.clone()))
+        .await
+        .unwrap();
+    let pending_write = api.sealed(*a, &pending, cid, mid, 1);
+    let mut other_key = good.clone();
+    other_key["deviceKeys"]["ed25519"] = json!(api.pubkey(&pending));
+    api.sign_sealed(&mut other_key);
+    let mut other_curve = good.clone();
+    other_curve["deviceKeys"]["curve25519"] = json!(api.pubkey(&pending));
+    other_curve["content"]["sender_key"] = other_curve["deviceKeys"]["curve25519"].clone();
+    api.sign_sealed(&mut other_curve);
+    let mut different_body = good.clone();
+    different_body["content"]["session_id"] = json!("another-session");
+    let mut missing_device = good.clone();
+    missing_device["signatures"][matrix_user(*a)]
+        .as_object_mut()
+        .unwrap()
+        .remove(&format!("ed25519:{device}"));
+    let mut missing_master = good.clone();
+    missing_master["signatures"][matrix_user(*a)]
+        .as_object_mut()
+        .unwrap()
+        .remove(&format!("ed25519:{}", api.pubkey(&format!("master:{a}"))));
+    for invalid in [
+        pending_write,
+        other_key,
+        other_curve,
+        different_body,
+        missing_device,
+        missing_master,
+    ] {
+        assert!(
+            envelope(&mut tx, &actor, &room, &event, &validate(invalid))
+                .await
+                .is_err()
+        );
+    }
+    sqlx::query(
+        "UPDATE cloud_crypto_devices SET revoked=true WHERE account_id=$1 AND device_id=$2",
+    )
+    .bind(a)
+    .bind(&device)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    assert!(
+        envelope(&mut tx, &actor, &room, &event, &validate(good))
+            .await
+            .is_err()
+    );
+    tx.rollback().await.unwrap();
+    drop(api);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn directory_endorsements_only_merge_verified_signatures_on_the_pinned_record() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let api = Api::new(&f).await;
+    let (a, h) = &f.users[0];
+    let (b, hb) = &f.users[1];
+    conversation(&f, *a, *b).await;
+    let device = registered(&api, h, *a).await;
+    let other = registered(&api, hb, *b).await;
+    let original = api.cross_keys(*a, &device);
+    let mut recovered = original.clone();
+    for key in recovered.as_object_mut().unwrap().values_mut() {
+        key.as_object_mut().unwrap().remove("signatures");
+    }
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":device,"requestId":Uuid::new_v4(),"kind":"signingKeys","proof":api.sig(&device,*a,"signingKeys",&recovered),"body":recovered})).await;
+    let pinned: Value = sqlx::query_scalar(
+        "SELECT self_signing_key FROM cloud_crypto_signing_keys WHERE account_id=$1",
+    )
+    .bind(a)
+    .fetch_one(&f.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(pinned, original["self_signing_key"]);
+    let mut target = api.cross_keys(*b, &other)["master_key"].clone();
+    let target_id = api.pubkey(&format!("master:{b}"));
+    let signer = format!("user_signing:{a}");
+    let pk = api.pubkey(&signer);
+    api.sign_object(&signer, *a, &pk, &mut target);
+    let upload = |object: Value| {
+        let body = json!({matrix_user(*b):{target_id.clone():object}});
+        json!({"deviceId":device,"requestId":Uuid::new_v4(),"kind":"signatures","proof":api.sig(&device,*a,"signatures",&body),"body":body})
+    };
+    api.ok(h, Method::POST, "/crypto/requests", upload(target.clone()))
+        .await;
+    let mut invalid = target.clone();
+    invalid["signatures"][matrix_user(*a)][format!("ed25519:{pk}")] = json!("invalid");
+    assert_eq!(
+        api.call(h, Method::POST, "/crypto/requests", upload(invalid))
+            .await
+            .0,
+        403
+    );
+    let mut changed = target.clone();
+    changed["usage"] = json!(["self_signing"]);
+    api.sign_object(&signer, *a, &pk, &mut changed);
+    assert_eq!(
+        api.call(h, Method::POST, "/crypto/requests", upload(changed))
+            .await
+            .0,
+        409
+    );
+    let stored: Value =
+        sqlx::query_scalar("SELECT master_key FROM cloud_crypto_signing_keys WHERE account_id=$1")
+            .bind(b)
+            .fetch_one(&f.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored["signatures"][matrix_user(*a)],
+        target["signatures"][matrix_user(*a)]
+    );
+
+    let mut directory = api.device_keys(*a, &device);
+    let ssk = format!("self_signing:{a}");
+    let selfpk = api.pubkey(&ssk);
+    api.sign_object(&ssk, *a, &selfpk, &mut directory);
+    let body = json!({matrix_user(*a):{device.clone():directory.clone()}});
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":device,"requestId":Uuid::new_v4(),"kind":"signatures","proof":api.sig(&device,*a,"signatures",&body),"body":body})).await;
+    let mut repeat = directory.clone();
+    repeat["signatures"][matrix_user(*a)][format!("ed25519:{selfpk}")] = json!("ignored");
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":device,"requestId":Uuid::new_v4(),"kind":"keysUpload","body":{"device_keys":repeat}})).await;
+    let stored: Value = sqlx::query_scalar(
+        "SELECT device_keys FROM cloud_crypto_devices WHERE account_id=$1 AND device_id=$2",
+    )
+    .bind(a)
+    .bind(&device)
+    .fetch_one(&f.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, directory);
+    // A legacy malformed record can be repaired only by the device already pinned to it.
+    let mut legacy = directory.clone();
+    legacy["algorithms"] = json!([]);
+    legacy["signatures"] = json!("invalid legacy shape");
+    sqlx::query(
+        "UPDATE cloud_crypto_devices SET device_keys=$3 WHERE account_id=$1 AND device_id=$2",
+    )
+    .bind(a)
+    .bind(&device)
+    .bind(legacy)
+    .execute(&f.state.pool)
+    .await
+    .unwrap();
+    let repaired = api.device_keys(*a, &device);
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":device,"requestId":Uuid::new_v4(),"kind":"keysUpload","body":{"device_keys":repaired}})).await;
+    let restored: Value = sqlx::query_scalar(
+        "SELECT device_keys FROM cloud_crypto_devices WHERE account_id=$1 AND device_id=$2",
+    )
+    .bind(a)
+    .bind(&device)
+    .fetch_one(&f.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(restored, repaired);
+
+    drop(api);
+    f.close().await;
+}
+#[tokio::test]
 async fn sealed_private_messages_never_write_plaintext_or_fallback() {
     let Some(f) = Fixture::new().await else {
         return;
@@ -426,7 +676,7 @@ async fn sealed_private_messages_never_write_plaintext_or_fallback() {
         409
     );
     let mid = Uuid::new_v4();
-    let request = json!({"requestId":Uuid::new_v4(),"messageId":mid,"text":"","sealed":sealed(*a,&da,cid,mid,1)});
+    let request = json!({"requestId":Uuid::new_v4(),"messageId":mid,"text":"","sealed":api.sealed(*a,&da,cid,mid,1)});
     let sent = api
         .ok(
             ha,
@@ -453,7 +703,7 @@ async fn sealed_private_messages_never_write_plaintext_or_fallback() {
         .await
         .unwrap();
     assert!(text.is_empty());
-    let changed=api.ok(ha,Method::PATCH,&format!("/chat/messages/{mid}"),json!({"requestId":Uuid::new_v4(),"text":"","expectedRevision":"1","sealed":sealed(*a,&da,cid,mid,2)})).await;
+    let changed=api.ok(ha,Method::PATCH,&format!("/chat/messages/{mid}"),json!({"requestId":Uuid::new_v4(),"text":"","expectedRevision":"1","sealed":api.sealed(*a,&da,cid,mid,2)})).await;
     assert_eq!(changed["revision"], "2");
     let gone = api
         .ok(
@@ -800,12 +1050,13 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
         .await
         .unwrap();
     let item = Uuid::new_v4();
-    let mut blob = sealed(human, &dh, cid, item, 1);
+    let mut blob = api.sealed(human, &dh, cid, item, 1);
     blob["roomId"] = json!(connector::crypto::resource_room(
         &ai.to_string(),
         "profile",
         None
     ));
+    api.sign_sealed(&mut blob);
     let payload = json!({"requestId":Uuid::new_v4(),"deviceId":dh,"aiId":ai,"conversationId":null,"kind":"profile","expectedRevision":"0","sealed":blob,"sources":[],"tombstone":null});
     let participants_path = format!("/crypto/resource-participants?aiId={ai}&kind=profile");
     let old = api
@@ -846,7 +1097,22 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
         .await;
     assert_eq!(denied.0, 409);
     assert_eq!(denied.1["code"], "audience_changed");
-    registered(&api, h, human).await;
+    let next_device = pending(&api, h, human).await;
+    let before_admission = api
+        .ok(h, Method::GET, &participants_path, Value::Null)
+        .await;
+    assert_eq!(current["revision"], before_admission["revision"]);
+    api.ok(
+        h,
+        Method::POST,
+        "/crypto/authority/enroll",
+        api.command(
+            human,
+            "enroll",
+            json!({"deviceId":dh,"target":next_device,"fingerprint":api.pubkey(&next_device)}),
+        ),
+    )
+    .await;
     let newer = api
         .ok(h, Method::GET, &participants_path, Value::Null)
         .await;
@@ -920,20 +1186,22 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
     .await
     .unwrap();
     let memory = Uuid::new_v4();
-    let mut blob = sealed(human, &dh, cid, memory, 1);
+    let mut blob = api.sealed(human, &dh, cid, memory, 1);
     blob["roomId"] = json!(connector::crypto::resource_room(
         &ai.to_string(),
         "memory",
         Some(&cid.to_string())
     ));
+    api.sign_sealed(&mut blob);
     api.ok(h,Method::PUT,&format!("/crypto/resources/{memory}"),json!({"requestId":Uuid::new_v4(),"deviceId":dh,"aiId":ai,"conversationId":cid,"kind":"memory","expectedRevision":"0","sealed":blob,"sources":[{"messageId":source,"revision":"1"}],"tombstone":null})).await;
     let summary = Uuid::new_v4();
-    let mut blob = sealed(ai, &dn, cid, summary, 1);
+    let mut blob = api.sealed(ai, &dn, cid, summary, 1);
     blob["roomId"] = json!(connector::crypto::resource_room(
         &ai.to_string(),
         "summary",
         Some(&cid.to_string())
     ));
+    api.sign_sealed(&mut blob);
     let summary_save = json!({"requestId":Uuid::new_v4(),"deviceId":dn,"aiId":ai,"conversationId":cid,"kind":"summary","expectedRevision":"0","sealed":blob,"sources":[{"messageId":source,"revision":"1"}],"tombstone":null});
     // Freeze the actual request (including audience CAS) for a replay after withdrawal.
     let audience = api
@@ -961,8 +1229,9 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
     let mut late = summary_save.clone();
     late["requestId"] = json!(Uuid::new_v4());
     late["sources"][0]["messageId"] = json!(late_source);
-    let mut envelope = sealed(ai, &dn, cid, late_id, 1);
+    let mut envelope = api.sealed(ai, &dn, cid, late_id, 1);
     envelope["roomId"] = late["sealed"]["roomId"].clone();
+    api.sign_sealed(&mut envelope);
     late["sealed"] = envelope;
     let (status, response) = api
         .call(
@@ -1130,12 +1399,13 @@ async fn encrypted_node_handover_drains_checks_applied_and_requires_ready_or_for
     hn.insert("authorization", format!("Bearer {secret}").parse().unwrap());
     let dn = registered(&api, &hn, ai).await;
     let profile = Uuid::new_v4();
-    let mut blob = sealed(human, &dh, cid, profile, 1);
+    let mut blob = api.sealed(human, &dh, cid, profile, 1);
     blob["roomId"] = json!(connector::crypto::resource_room(
         &ai.to_string(),
         "profile",
         None
     ));
+    api.sign_sealed(&mut blob);
     api.ok(h,Method::PUT,&format!("/crypto/resources/{profile}"),json!({"requestId":Uuid::new_v4(),"deviceId":dh,"aiId":ai,"conversationId":null,"kind":"profile","expectedRevision":"0","sealed":blob,"sources":[],"tombstone":null})).await;
     assert_eq!(
         api.call(
@@ -1194,12 +1464,13 @@ async fn encrypted_node_handover_drains_checks_applied_and_requires_ready_or_for
     api.ok(&hn,Method::PUT,"/crypto/backup",json!({"deviceId":dn,"expectedVersion":null,"version":version,"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"backup-public"}})).await;
     api.ok(&hn, Method::POST, "/node/handover-ready", ready.clone())
         .await;
-    let mut blob = sealed(human, &dh, cid, profile, 2);
+    let mut blob = api.sealed(human, &dh, cid, profile, 2);
     blob["roomId"] = json!(connector::crypto::resource_room(
         &ai.to_string(),
         "profile",
         None
     ));
+    api.sign_sealed(&mut blob);
     api.ok(h,Method::PUT,&format!("/crypto/resources/{profile}"),json!({"requestId":Uuid::new_v4(),"deviceId":dh,"aiId":ai,"conversationId":null,"kind":"profile","expectedRevision":"1","sealed":blob,"sources":[],"tombstone":null})).await;
     assert_eq!(
         api.ok(
@@ -1293,7 +1564,7 @@ async fn encrypted_group_history_audience_and_attachment_boundaries() {
         .await;
     let revision = enabled["revision"].clone();
     let mid = Uuid::new_v4();
-    let request = json!({"requestId":Uuid::new_v4(),"messageId":mid,"text":"","sealed":sealed(*a,&da,cid,mid,1),"expectedConversationRevision":revision,"mentions":[b],"encryptedAttachments":[{"index":0,"data":"Y2lwaGVydGV4dA=="}]});
+    let request = json!({"requestId":Uuid::new_v4(),"messageId":mid,"text":"","sealed":api.sealed(*a,&da,cid,mid,1),"expectedConversationRevision":revision,"mentions":[b],"encryptedAttachments":[{"index":0,"data":"Y2lwaGVydGV4dA=="}]});
     let message = api
         .ok(
             ha,
@@ -1435,7 +1706,7 @@ async fn encrypted_contact_keeps_schedule_metadata_and_ciphertext_only() {
         .unwrap();
     let iid = Uuid::new_v4();
     let due = chrono::Utc::now() + chrono::Duration::hours(1);
-    let mut blob = sealed(*human, &device, cid, iid, 1);
+    let mut blob = api.sealed(*human, &device, cid, iid, 1);
     use base64::Engine;
     blob["content"]["ciphertext"] =
         json!(base64::engine::general_purpose::STANDARD.encode(format!(
@@ -1443,6 +1714,7 @@ async fn encrypted_contact_keeps_schedule_metadata_and_ciphertext_only() {
             "字".repeat(4000),
             "signed-schedule-metadata".repeat(100)
         )));
+    api.sign_sealed(&mut blob);
     let request = json!({"requestId":Uuid::new_v4(),"intentId":iid,"deviceId":device,"aiId":ai,"content":"","sealed":blob,"expectedConversationRevision":"1","dueAt":due,"expiresAt":due+chrono::Duration::hours(2),"utcOffsetMinutes":480});
     assert!(serde_json::to_vec(&request).unwrap().len() > 16 * 1024);
     let path = format!("/chat/conversations/{cid}/contact-intents");
@@ -1493,7 +1765,7 @@ async fn encrypted_contact_keeps_schedule_metadata_and_ciphertext_only() {
     let parts = crate::chat::save_encrypted_uploads(&f.state.attachments, mid, &uploads)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO cloud_messages(id,conversation,sender,body,sealed,attachments,crypto_audience_revision) VALUES($1,$2,$3,'',$4,$5,1)").bind(mid).bind(cid).bind(human).bind(sealed(*human,&device,cid,mid,1)).bind(parts).execute(&f.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_messages(id,conversation,sender,body,sealed,attachments,crypto_audience_revision) VALUES($1,$2,$3,'',$4,$5,1)").bind(mid).bind(cid).bind(human).bind(api.sealed(*human,&device,cid,mid,1)).bind(parts).execute(&f.state.pool).await.unwrap();
     let client = connector::node::NodeClient::new(&api.url, &token, None).unwrap();
     assert_eq!(
         client
@@ -1644,12 +1916,13 @@ async fn encrypted_group_resources_keep_each_ai_scopes_and_permissions() {
         for kind in ["profile", "memory", "summarySettings", "summary"] {
             let id = Uuid::new_v4();
             let conversation = (kind != "profile").then_some(cid);
-            let mut blob = sealed(*human, &device, cid, id, 1);
+            let mut blob = api.sealed(*human, &device, cid, id, 1);
             blob["roomId"] = json!(connector::crypto::resource_room(
                 &ai.to_string(),
                 kind,
                 conversation.map(|c| c.to_string()).as_deref()
             ));
+            api.sign_sealed(&mut blob);
             let payload = json!({"requestId":Uuid::new_v4(),"deviceId":device,"aiId":ai,"conversationId":conversation,"kind":kind,"expectedRevision":"0","sealed":blob,"sources":[],"tombstone":null});
             let saved = api
                 .ok(h, Method::PUT, &format!("/crypto/resources/{id}"), payload)
@@ -1765,12 +2038,13 @@ async fn encrypted_group_resources_keep_each_ai_scopes_and_permissions() {
     assert!(unaffected["items"][0]["tombstone"].is_null());
     let id = settings_id.unwrap();
     let item: Uuid = id.parse().unwrap();
-    let mut blob = sealed(*human, &device, cid, item, 3);
+    let mut blob = api.sealed(*human, &device, cid, item, 3);
     blob["roomId"] = json!(connector::crypto::resource_room(
         &removed.to_string(),
         "summarySettings",
         Some(&cid.to_string())
     ));
+    api.sign_sealed(&mut blob);
     let participants=api.ok(h,Method::GET,&format!("/crypto/resource-participants?aiId={removed}&conversationId={cid}&kind=summarySettings"),Value::Null).await;
     let mut save = json!({"requestId":Uuid::new_v4(),"deviceId":device,"aiId":removed,"conversationId":cid,"kind":"summarySettings","expectedRevision":"1","expectedAudienceRevision":participants["revision"],"sealed":blob,"sources":[],"tombstone":null});
     assert_eq!(
@@ -1888,7 +2162,15 @@ async fn history_conversion_preserves_identity_sources_readstate_and_private_bac
             json!({"conversationId":cid}),
         )
         .await;
-    let begin = json!({"requestId":Uuid::new_v4(),"deviceId":device,"conversationId":cid,"expectedConversationRevision":preview["conversationRevision"],"sourceDigest":preview["sourceDigest"],"backupDigest":"a".repeat(64),"recoveryDigest":"b".repeat(64),"localPendingResolved":true});
+    let begin = api.command(*a, "history.begin", json!({"requestId":Uuid::new_v4(),"deviceId":device,"conversationId":cid,"expectedConversationRevision":preview["conversationRevision"],"sourceDigest":preview["sourceDigest"],"backupDigest":"a".repeat(64),"recoveryDigest":"b".repeat(64),"localPendingResolved":true}));
+    let mut unsigned = begin.clone();
+    unsigned.as_object_mut().unwrap().remove("proof");
+    assert_eq!(
+        api.call(ha, Method::POST, "/crypto/history-migrations", unsigned)
+            .await
+            .0,
+        403
+    );
     let started = api
         .ok(
             ha,
@@ -1908,7 +2190,9 @@ async fn history_conversion_preserves_identity_sources_readstate_and_private_bac
         started["id"]
     );
     let mut competing = begin.clone();
+    competing.as_object_mut().unwrap().remove("proof");
     competing["requestId"] = json!(Uuid::new_v4());
+    let competing = api.command(*a, "history.begin", competing);
     assert_eq!(
         api.call(ha, Method::POST, "/crypto/history-migrations", competing)
             .await
@@ -1926,8 +2210,24 @@ async fn history_conversion_preserves_identity_sources_readstate_and_private_bac
         .await["migration"]["id"],
         started["id"]
     );
-    let finish =
-        json!({"requestId":Uuid::new_v4(),"deviceId":device,"verificationDigest":"c".repeat(64)});
+    let finish = api.command(
+        *a,
+        &format!("history.finish:{id}"),
+        json!({"requestId":Uuid::new_v4(),"deviceId":device,"verificationDigest":"c".repeat(64)}),
+    );
+    let mut unsigned_finish = finish.clone();
+    unsigned_finish.as_object_mut().unwrap().remove("proof");
+    assert_eq!(
+        api.call(
+            ha,
+            Method::POST,
+            &format!("/crypto/history-migrations/{id}/finish"),
+            unsigned_finish
+        )
+        .await
+        .0,
+        403
+    );
     assert_eq!(
         api.call(
             ha,
@@ -1959,11 +2259,12 @@ async fn history_conversion_preserves_identity_sources_readstate_and_private_bac
         let item: Uuid = serde_json::from_value(entry["id"].clone()).unwrap();
         let kind = entry["kind"].as_str().unwrap();
         let rev = entry["revision"].as_str().unwrap().parse::<u32>().unwrap();
-        let mut blob = sealed(*a, &device, cid, item, rev);
+        let mut blob = api.sealed(*a, &device, cid, item, rev);
         blob["eventId"] = json!(format!(
             "${item}.{}.migration.{id}",
             if kind == "contactIntent" { 1 } else { rev }
         ));
+        api.sign_sealed(&mut blob);
         let mut command = json!({"requestId":Uuid::new_v4(),"deviceId":device,"expectedRevision":entry["revision"],"sourceDigest":entry["sourceDigest"],"sealed":blob});
         if item == mid {
             command["encryptedAttachments"] = json!([{"index":0,"data":"bmV3LWNpcGhlcg=="}]);
@@ -2170,7 +2471,7 @@ async fn history_migration_freezes_content_but_allows_revocation_and_repreview()
             ha,
             Method::POST,
             "/crypto/history-migrations",
-            request.clone(),
+            api.command(*a, "history.begin", request.clone()),
         )
         .await;
     let old_id = first["id"].as_str().unwrap();
@@ -2214,7 +2515,12 @@ async fn history_migration_freezes_content_but_allows_revocation_and_repreview()
     request["expectedConversationRevision"] = preview["conversationRevision"].clone();
     request["sourceDigest"] = preview["sourceDigest"].clone();
     let next = api
-        .ok(ha, Method::POST, "/crypto/history-migrations", request)
+        .ok(
+            ha,
+            Method::POST,
+            "/crypto/history-migrations",
+            api.command(*a, "history.begin", request),
+        )
         .await;
     let id: Uuid = serde_json::from_value(next["id"].clone()).unwrap();
     assert_ne!(next["id"], first["id"]);
@@ -2227,17 +2533,18 @@ async fn history_migration_freezes_content_but_allows_revocation_and_repreview()
         )
         .await;
     let entry = &list["items"][0];
-    let mut blob = sealed(*a, &device, cid, mid, 1);
+    let mut blob = api.sealed(*a, &device, cid, mid, 1);
     blob["eventId"] = json!(format!("${mid}.1.migration.{id}"));
+    api.sign_sealed(&mut blob);
     api.ok(ha,Method::PUT,&format!("/crypto/history-migrations/{id}/items/message/{mid}"),json!({"requestId":Uuid::new_v4(),"deviceId":device,"expectedRevision":"1","sourceDigest":entry["sourceDigest"],"sealed":blob})).await;
     api.ok(
         ha,
         Method::POST,
         &format!("/crypto/history-migrations/{id}/finish"),
-        json!({"requestId":Uuid::new_v4(),"deviceId":device,"verificationDigest":"c".repeat(64)}),
+        api.command(*a, &format!("history.finish:{id}"), json!({"requestId":Uuid::new_v4(),"deviceId":device,"verificationDigest":"c".repeat(64)})),
     )
     .await;
-    let edited=api.ok(ha,Method::PATCH,&format!("/chat/messages/{mid}"),json!({"requestId":Uuid::new_v4(),"text":"","expectedRevision":"1","expectedConversationRevision":"2","sealed":sealed(*a,&device,cid,mid,2)})).await;
+    let edited=api.ok(ha,Method::PATCH,&format!("/chat/messages/{mid}"),json!({"requestId":Uuid::new_v4(),"text":"","expectedRevision":"1","expectedConversationRevision":"2","sealed":api.sealed(*a,&device,cid,mid,2)})).await;
     assert!(edited["historyMigration"].is_null());
     assert_eq!(edited["revision"], "2");
     sqlx::query("UPDATE cloud_conversations SET read_only=true WHERE id=$1")
@@ -2280,8 +2587,10 @@ async fn migrated_materials_require_node_history_capability() {
     let mid = Uuid::new_v4();
     let migration = Uuid::new_v4();
     let device = Uuid::new_v4().to_string();
+    api.ensure_key(&device);
+    api.ensure_key(&format!("master:{human}"));
     sqlx::query("UPDATE cloud_conversations SET crypto_enabled=true,crypto_history_complete=true WHERE id=$1").bind(cid).execute(&f.state.pool).await.unwrap();
-    sqlx::query("INSERT INTO cloud_messages(id,conversation,sender,body,sealed,history_migration) VALUES($1,$2,$3,'',$4,$5)").bind(mid).bind(cid).bind(human).bind(sealed(human,&device,cid,mid,1)).bind(json!({"id":migration,"actorId":human,"sourceDigest":"a".repeat(64)})).execute(&f.state.pool).await.unwrap();
+    sqlx::query("INSERT INTO cloud_messages(id,conversation,sender,body,sealed,history_migration) VALUES($1,$2,$3,'',$4,$5)").bind(mid).bind(cid).bind(human).bind(api.sealed(human,&device,cid,mid,1)).bind(json!({"id":migration,"actorId":human,"sourceDigest":"a".repeat(64)})).execute(&f.state.pool).await.unwrap();
     let tid = Uuid::new_v4();
     sqlx::query("INSERT INTO cloud_node_tasks(id,ai_id,conversation,input_id,input_revision,binding_version,expires_at,trigger) VALUES($1,$2,$3,$4,1,1,now()+interval '1 hour',$5)").bind(tid).bind(ai).bind(cid).bind(mid).bind(json!({"type":"message","messageId":mid,"inputIds":[mid]})).execute(&f.state.pool).await.unwrap();
     let mut headers = HeaderMap::new();
@@ -2335,7 +2644,7 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
             json!({"conversationId":cid}),
         )
         .await;
-    let begin = json!({"requestId":Uuid::new_v4(),"deviceId":device,"conversationId":cid,"expectedConversationRevision":preview["conversationRevision"],"sourceDigest":preview["sourceDigest"],"backupDigest":"a".repeat(64),"recoveryDigest":"b".repeat(64),"localPendingResolved":true});
+    let begin = api.command(*a, "history.begin", json!({"requestId":Uuid::new_v4(),"deviceId":device,"conversationId":cid,"expectedConversationRevision":preview["conversationRevision"],"sourceDigest":preview["sourceDigest"],"backupDigest":"a".repeat(64),"recoveryDigest":"b".repeat(64),"localPendingResolved":true}));
     let started = api
         .ok(
             ha,
@@ -2353,8 +2662,9 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
             Value::Null,
         )
         .await;
-    let mut blob = sealed(*a, &device, cid, mid, 1);
+    let mut blob = api.sealed(*a, &device, cid, mid, 1);
     blob["eventId"] = json!(format!("${mid}.1.migration.{id}"));
+    api.sign_sealed(&mut blob);
     let conversion = json!({"requestId":Uuid::new_v4(),"deviceId":device,"expectedRevision":"1","sourceDigest":entries["items"][0]["sourceDigest"],"sealed":blob});
     let item_path = format!("/crypto/history-migrations/{id}/items/message/{mid}");
     api.ok(ha, Method::PUT, &item_path, conversion.clone())
@@ -2405,7 +2715,7 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
             .is_null()
     );
     let recovered = registered(&api, ha, *a).await;
-    let finish = json!({"requestId":Uuid::new_v4(),"deviceId":recovered,"verificationDigest":"c".repeat(64)});
+    let finish = api.command(*a, &format!("history.finish:{id}"), json!({"requestId":Uuid::new_v4(),"deviceId":recovered,"verificationDigest":"c".repeat(64)}));
     api.ok(
         ha,
         Method::POST,
@@ -2444,7 +2754,7 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
             json!({"conversationId":cid}),
         )
         .await;
-    let next = json!({"requestId":Uuid::new_v4(),"deviceId":recovered,"conversationId":cid,"expectedConversationRevision":preview["conversationRevision"],"sourceDigest":preview["sourceDigest"],"backupDigest":"a".repeat(64),"recoveryDigest":"b".repeat(64),"localPendingResolved":true});
+    let next = api.command(*a, "history.begin", json!({"requestId":Uuid::new_v4(),"deviceId":recovered,"conversationId":cid,"expectedConversationRevision":preview["conversationRevision"],"sourceDigest":preview["sourceDigest"],"backupDigest":"a".repeat(64),"recoveryDigest":"b".repeat(64),"localPendingResolved":true}));
     api.ok(ha, Method::POST, "/crypto/history-migrations", next.clone())
         .await;
     api.ok(ha,Method::PUT,&format!("/chat/groups/{cid}"),json!({"requestId":Uuid::new_v4(),"expectedRevision":"1","name":"membership revision changed"})).await;
