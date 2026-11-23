@@ -1,7 +1,11 @@
 use super::*;
 use crate::chat::tests::Fixture;
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
+use ed25519_dalek::{Signer, SigningKey};
 use reqwest::{Client, Method};
+use std::{collections::HashMap, sync::Mutex};
 struct Api {
+    keys: Mutex<HashMap<String, SigningKey>>,
     url: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -11,7 +15,28 @@ impl Api {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let app = crate::router(f.state.clone(), std::env::temp_dir());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        Self { url, task }
+        Self {
+            url,
+            task,
+            keys: Mutex::default(),
+        }
+    }
+    fn sig(&self, id: &str, account: Uuid, action: &str, body: &Value) -> String {
+        let mut v = json!([account, action, [id, body]]);
+        v.sort_all_objects();
+        let key = self.keys.lock().unwrap();
+        STANDARD_NO_PAD.encode(
+            key[id]
+                .sign(format!("llmn.authority.v1\n{v}").as_bytes())
+                .to_bytes(),
+        )
+    }
+    fn pubkey(&self, id: &str) -> String {
+        STANDARD_NO_PAD.encode(self.keys.lock().unwrap()[id].verifying_key().to_bytes())
+    }
+    fn command(&self, account: Uuid, action: &str, mut v: Value) -> Value {
+        v["proof"] = json!(self.sig(v["deviceId"].as_str().unwrap(), account, action, &v));
+        v
     }
     async fn call(&self, h: &HeaderMap, method: Method, path: &str, v: Value) -> (u16, Value) {
         let r = Client::new()
@@ -126,7 +151,7 @@ async fn crypto_directory_revision_tracks_public_changes_and_rolls_back() {
     };
     let api = Api::new(&f).await;
     let (a, h) = &f.users[0];
-    let device = registered(&api, h, *a).await;
+    let device = pending(&api, h, *a).await;
     let original = directory_revision(&f).await;
     sqlx::query("UPDATE cloud_crypto_devices SET display_name='renamed',device_keys=device_keys,revoked=revoked WHERE account_id=$1")
         .bind(a).execute(&f.state.pool).await.unwrap();
@@ -227,16 +252,59 @@ async fn conversation(f: &Fixture, a: Uuid, b: Uuid) -> Uuid {
     }
     cid
 }
-async fn registered(api: &Api, h: &HeaderMap, aid: Uuid) -> String {
+async fn pending(api: &Api, h: &HeaderMap, aid: Uuid) -> String {
     let d = Uuid::new_v4().to_string();
+    let seed: [u8; 32] = rand::random();
+    api.keys
+        .lock()
+        .unwrap()
+        .insert(d.clone(), SigningKey::from_bytes(&seed));
     api.ok(
         h,
         Method::POST,
         "/crypto/devices",
-        json!({"deviceId":d,"name":"test device"}),
+        json!({"deviceId":d,"name":"fixture device"}),
     )
     .await;
-    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"requestId":Uuid::new_v4(),"kind":"keysUpload","body":{"device_keys":{"user_id":matrix_user(aid),"device_id":d,"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:test":"opaque-public","ed25519:test":"opaque-public"},"signatures":{matrix_user(aid):{"ed25519:test":"opaque-signature"}}}}})).await;
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"requestId":Uuid::new_v4(),"kind":"keysUpload","body":{"device_keys":{"user_id":matrix_user(aid),"device_id":d,"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{format!("ed25519:{d}"):api.pubkey(&d),"curve25519:test":"opaque-public","ed25519:test":"opaque-public"},"signatures":{matrix_user(aid):{"ed25519:test":"opaque-signature"}}}}})).await;
+    d
+}
+async fn registered(api: &Api, h: &HeaderMap, aid: Uuid) -> String {
+    let d = pending(api, h, aid).await;
+    if h.contains_key("authorization") {
+        return d;
+    }
+    let directory = api.ok(h, Method::GET, "/crypto/devices", Value::Null).await;
+    for other in directory["devices"].as_array().unwrap() {
+        let id = other["deviceId"].as_str().unwrap();
+        if id == d {
+            continue;
+        }
+        let grant = api
+            .ok(
+                h,
+                Method::GET,
+                &format!("/crypto/authority/devices/{id}"),
+                Value::Null,
+            )
+            .await;
+        if grant["authorized"] == true {
+            api.ok(
+                h,
+                Method::POST,
+                "/crypto/authority/enroll",
+                api.command(
+                    aid,
+                    "enroll",
+                    json!({"deviceId":id,"target":d,"fingerprint":api.pubkey(&d)}),
+                ),
+            )
+            .await;
+            return d;
+        }
+    }
+    let body = json!({"master_key":{"user_id":matrix_user(aid),"keys":{"ed25519:fixture-master":"fixture-master"}}});
+    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"kind":"signingKeys","requestId":Uuid::new_v4(),"proof":api.sig(&d,aid,"signingKeys",&body),"body":body})).await;
     d
 }
 fn sealed(a: Uuid, d: &str, cid: Uuid, mid: Uuid, rev: u32) -> Value {
@@ -253,7 +321,7 @@ async fn matrix_transport_is_scoped_deduplicated_and_revocable() {
     conversation(&f, *a, *b).await;
     let da = registered(&api, ha, *a).await;
     let db = registered(&api, hb, *b).await;
-    api.ok(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"cross-sign-device","kind":"signatures","body":{matrix_user(*a):{da.clone():{"keys":{"curve25519:test":"opaque-public","ed25519:test":"opaque-public"},"signatures":{matrix_user(*a):{"ed25519:self-signing":"cross-signature"}}}}}})).await;
+    api.ok(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"cross-sign-device","kind":"signatures","body":{matrix_user(*a):{da.clone():{"keys":{format!("ed25519:{da}"):api.pubkey(&da),"curve25519:test":"opaque-public","ed25519:test":"opaque-public"},"signatures":{matrix_user(*a):{"ed25519:self-signing":"cross-signature"}}}}}})).await;
     let signed=api.ok(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"query-signed","kind":"keysQuery","body":{"device_keys":{matrix_user(*a):[da.clone()]}}})).await;
     assert_eq!(
         signed["device_keys"][matrix_user(*a)][&da]["signatures"][matrix_user(*a)]["ed25519:test"],
@@ -300,11 +368,16 @@ async fn matrix_transport_is_scoped_deduplicated_and_revocable() {
     assert_eq!(empty["to_device"]["events"], json!([]));
     let denied=api.call(ha,Method::POST,"/crypto/requests",json!({"deviceId":da,"requestId":"unrelated","kind":"toDevice","body":{"event_type":"m.room.encrypted","txn_id":"x","messages":{matrix_user(f.users[2].0):{"*":{"ciphertext":"opaque"}}}}})).await;
     assert_eq!(denied.0, 403);
+    let survivor = registered(&api, ha, *a).await;
     api.ok(
         ha,
         Method::POST,
         &format!("/crypto/devices/{da}/revoke"),
-        Value::Null,
+        api.command(
+            *a,
+            "revoke",
+            json!({"deviceId":survivor,"accountId":a,"target":da}),
+        ),
     )
     .await;
     assert_eq!(
@@ -414,45 +487,135 @@ async fn recovery_and_backup_store_only_opaque_payloads() {
     let api = Api::new(&f).await;
     let (a, h) = &f.users[0];
     let d = registered(&api, h, *a).await;
+    let unadmitted = pending(&api, h, *a).await;
     let version = Uuid::new_v4();
-    api.ok(h,Method::PUT,"/crypto/backup",json!({"deviceId":d,"expectedVersion":null,"version":version,"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"backup-public","signatures":{}}})).await;
-    api.ok(h,Method::POST,"/crypto/requests",json!({"deviceId":d,"requestId":"backup-session","kind":"keysBackup","body":{"version":version,"rooms":{"!room:llmn":{"sessions":{"opaque-session":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"encrypted-history-key","ephemeral":"public-ephemeral","mac":"opaque-mac"}}}}}}})).await;
-    let keys = api
-        .ok(h, Method::GET, "/crypto/backup/keys", Value::Null)
+    let first = |id: &str| json!({"deviceId":id,"expectedVersion":null,"version":version,"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":STANDARD_NO_PAD.encode([1u8;32])}});
+    assert_eq!(
+        api.call(
+            h,
+            Method::PUT,
+            "/crypto/backup",
+            api.command(*a, "backup", first(&unadmitted))
+        )
+        .await
+        .0,
+        403
+    );
+    let mut wrong = first(&d);
+    wrong["proof"] = json!(api.sig(&unadmitted, *a, "backup", &wrong));
+    assert_eq!(
+        api.call(h, Method::PUT, "/crypto/backup", wrong).await.0,
+        403
+    );
+    let start = api.command(*a, "backup", first(&d));
+    api.ok(h, Method::PUT, "/crypto/backup", start.clone())
         .await;
+    api.ok(h, Method::PUT, "/crypto/backup", start).await;
+    let room_keys = |ver: Uuid| json!({"version":ver,"rooms":{"!r:llmn":{"sessions":{"opaque":{"session_data":{"ciphertext":"history"}}}}}});
+    let upload = |ver: Uuid| {
+        let body = room_keys(ver);
+        json!({"deviceId":d,"requestId":Uuid::new_v4(),"kind":"keysBackup","proof":api.sig(&d,*a,"keysBackup",&body),"body":body})
+    };
+    api.ok(h, Method::POST, "/crypto/requests", upload(version))
+        .await;
+    let recovery = |id: &str| json!({"deviceId":id,"expectedVersion":null,"version":version,"backupVersion":version,"enrollmentKey":api.pubkey(&d),"ciphertext":"b2xk"});
     assert_eq!(
-        keys["rooms"]["!room:llmn"]["sessions"]["opaque-session"]["session_data"]["ciphertext"],
-        "encrypted-history-key"
+        api.call(
+            h,
+            Method::PUT,
+            "/crypto/recovery",
+            api.command(*a, "recovery", recovery(&unadmitted))
+        )
+        .await
+        .0,
+        403
     );
-    api.ok(
-        h,
-        Method::PUT,
-        "/crypto/recovery",
-        json!({"deviceId":d,"expectedVersion":null,"version":version,"ciphertext":"b3BhcXVlLXNlY3JldHMtYnVuZGxl"}),
-    )
-    .await;
-    assert_eq!(
-        api.ok(h, Method::GET, "/crypto/recovery", Value::Null)
-            .await["version"],
-        version.to_string()
-    );
+    let save = api.command(*a, "recovery", recovery(&d));
+    api.ok(h, Method::PUT, "/crypto/recovery", save.clone())
+        .await;
+    api.ok(h, Method::PUT, "/crypto/recovery", save).await;
     assert_eq!(
         api.call(&f.users[1].1, Method::GET, "/crypto/recovery", Value::Null)
             .await
             .0,
         404
     );
-    let new_version = Uuid::new_v4();
-    let next = json!({"deviceId":d,"expectedVersion":version,"version":new_version,"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"next-backup-public","signatures":{}}});
-    api.ok(h, Method::PUT, "/crypto/backup", next.clone()).await;
-    api.ok(h, Method::PUT, "/crypto/backup", next).await;
-    assert_eq!(api.call(h,Method::PUT,"/crypto/backup",json!({"deviceId":d,"expectedVersion":new_version,"version":version,"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"backup-public","signatures":{}}})).await.0,409);
-    let next = json!({"deviceId":d,"expectedVersion":version,"version":new_version,"ciphertext":"bmV3LW9wYXF1ZS1zZWNyZXRz"});
-    api.ok(h, Method::PUT, "/crypto/recovery", next.clone())
+    let revoke = |id: &str| {
+        api.command(
+            *a,
+            "revoke",
+            json!({"deviceId":id,"accountId":a,"target":unadmitted}),
+        )
+    };
+    assert_eq!(
+        api.call(
+            h,
+            Method::POST,
+            &format!("/crypto/devices/{d}/revoke"),
+            revoke(&unadmitted)
+        )
+        .await
+        .0,
+        403
+    );
+    api.ok(
+        h,
+        Method::POST,
+        &format!("/crypto/devices/{unadmitted}/revoke"),
+        revoke(&d),
+    )
+    .await;
+    assert_eq!(
+        api.call(h, Method::POST, "/crypto/requests", upload(version))
+            .await
+            .0,
+        409
+    );
+    let next = Uuid::new_v4();
+    let rotate = |key: &str| {
+        api.command(*a,"backup",json!({"deviceId":d,"expectedVersion":version,"version":next,"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":key}}))
+    };
+    assert_eq!(
+        api.call(
+            h,
+            Method::PUT,
+            "/crypto/backup",
+            rotate(&STANDARD_NO_PAD.encode([1u8; 32]))
+        )
+        .await
+        .0,
+        409
+    );
+    api.ok(
+        h,
+        Method::PUT,
+        "/crypto/backup",
+        rotate(&STANDARD_NO_PAD.encode([2u8; 32])),
+    )
+    .await;
+    api.ok(h, Method::POST, "/crypto/requests", upload(next))
         .await;
-    api.ok(h, Method::PUT, "/crypto/recovery", next).await;
-    assert_eq!(api.call(h,Method::PUT,"/crypto/recovery",json!({"deviceId":d,"expectedVersion":new_version,"version":version,"ciphertext":"b3BhcXVlLXNlY3JldHMtYnVuZGxl"})).await.0,409);
-    assert_eq!(api.call(h,Method::PUT,"/crypto/recovery",json!({"deviceId":d,"expectedVersion":new_version,"version":new_version,"ciphertext":"b3ZlcndyaXRl"})).await.0,409);
+    let keys = api
+        .ok(
+            h,
+            Method::GET,
+            &format!("/crypto/backup/keys?version={version}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(
+        keys["rooms"]["!r:llmn"]["sessions"]["opaque"]["session_data"]["ciphertext"],
+        "history"
+    );
+    let original = api
+        .ok(
+            h,
+            Method::GET,
+            &format!("/crypto/recovery?version={version}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(original["ciphertext"], "b2xk");
     drop(api);
     f.close().await;
 }
@@ -486,9 +649,92 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
     let dn = registered(&api, &hn, ai).await;
     // Revocation between roster lookup and delivery must not fall back to the
     // still-valid private-chat relationship, including receipt replays.
-    let history = json!({"deviceId":dn,"requestId":"admin-history","kind":"toDevice","body":{"llmn_purpose":"aiAdminHistory","event_type":"m.room.encrypted","txn_id":"history","messages":{matrix_user(human):{dh.clone():{"ciphertext":"opaque-history"}}}}});
+    let history_chat = conversation(&f, f.users[2].0, ai).await;
+    let revision: i64 = sqlx::query_scalar(
+        "UPDATE cloud_conversations SET crypto_enabled=true WHERE id=$1 RETURNING revision",
+    )
+    .bind(history_chat)
+    .fetch_one(&f.state.pool)
+    .await
+    .unwrap();
+    let roster = api
+        .ok(
+            &hn,
+            Method::GET,
+            &format!("/crypto/resource-participants?aiId={ai}&kind=profile"),
+            Value::Null,
+        )
+        .await;
+    let history = json!({"deviceId":dn,"requestId":"admin-history","kind":"toDevice","body":{"llmn_purpose":"aiAdminHistory","llmn_audience_revision":roster["revision"],"llmn_chat_revisions":{history_chat.to_string():revision.to_string()},"event_type":"m.room.encrypted","txn_id":"history","messages":{matrix_user(human):{dh.clone():{"ciphertext":"opaque-history"}}}}});
+    sqlx::query(
+        "UPDATE cloud_crypto_devices SET authorized=false WHERE account_id=$1 AND device_id=$2",
+    )
+    .bind(human)
+    .bind(&dh)
+    .execute(&f.state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        api.call(&hn, Method::POST, "/crypto/requests", history.clone())
+            .await
+            .0,
+        403
+    );
+    sqlx::query(
+        "UPDATE cloud_crypto_devices SET authorized=true WHERE account_id=$1 AND device_id=$2",
+    )
+    .bind(human)
+    .bind(&dh)
+    .execute(&f.state.pool)
+    .await
+    .unwrap();
+    let mut unscoped = history.clone();
+    unscoped["body"]
+        .as_object_mut()
+        .unwrap()
+        .remove("llmn_chat_revisions");
+    assert_eq!(
+        api.call(&hn, Method::POST, "/crypto/requests", unscoped)
+            .await
+            .0,
+        400
+    );
+    let mut stale = history.clone();
+    stale["body"]["llmn_chat_revisions"][history_chat.to_string()] =
+        json!((revision + 1).to_string());
+    assert_eq!(
+        api.call(&hn, Method::POST, "/crypto/requests", stale)
+            .await
+            .0,
+        409
+    );
     api.ok(&hn, Method::POST, "/crypto/requests", history.clone())
         .await;
+    let inbox = format!("/crypto/sync?deviceId={dh}&after=0");
+    let delivered = api.ok(h, Method::GET, &inbox, Value::Null).await;
+    assert_eq!(
+        delivered["to_device"]["events"][0]["content"]["ciphertext"],
+        "opaque-history"
+    );
+    assert!(
+        delivered["to_device"]["events"][0]
+            .get("llmn_route")
+            .is_none()
+    );
+    sqlx::query("UPDATE cloud_conversations SET revision=revision+1 WHERE id=$1")
+        .bind(history_chat)
+        .execute(&f.state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        api.ok(h, Method::GET, &inbox, Value::Null).await["to_device"]["events"],
+        json!([])
+    );
+    let mut current = history.clone();
+    current["requestId"] = json!("current-history");
+    current["body"]["llmn_chat_revisions"][history_chat.to_string()] =
+        json!((revision + 1).to_string());
+    api.ok(&hn, Method::POST, "/crypto/requests", current).await;
     sqlx::query("DELETE FROM cloud_ai_admins WHERE ai_id=$1 AND administrator=$2")
         .bind(ai)
         .bind(human)
@@ -511,6 +757,7 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
     );
     late["requestId"] = json!("ordinary-room-key");
     late["body"].as_object_mut().unwrap().remove("llmn_purpose");
+    late["body"]["messages"][matrix_user(human)][&dh]["ciphertext"] = json!("ordinary");
     api.ok(&hn, Method::POST, "/crypto/requests", late).await;
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM cloud_crypto_inbox WHERE account_id=$1 AND device_id=$2",
@@ -520,10 +767,35 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
     .fetch_one(&f.state.pool)
     .await
     .unwrap();
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
+    // Old inbox rows have no purpose metadata. Keep them at rest, not in sync.
+    sqlx::query("INSERT INTO cloud_crypto_inbox(account_id,device_id,event) VALUES($1,$2,$3)")
+        .bind(human).bind(&dh).bind(json!({"sender":matrix_user(ai),"type":"m.room.encrypted","content":{"ciphertext":"legacy"}}))
+        .execute(&f.state.pool).await.unwrap();
+    let delivered = api.ok(h, Method::GET, &inbox, Value::Null).await;
+    assert_eq!(
+        delivered["to_device"]["events"].as_array().unwrap().len(),
+        1
+    );
+    assert!(
+        delivered["to_device"]["events"][0]
+            .get("llmn_route")
+            .is_none()
+    );
+    assert_eq!(
+        delivered["to_device"]["events"][0]["content"]["ciphertext"],
+        "ordinary"
+    );
     sqlx::query("INSERT INTO cloud_ai_admins VALUES($1,$2,true)")
         .bind(ai)
         .bind(human)
+        .execute(&f.state.pool)
+        .await
+        .unwrap();
+    // A recovered node must not rediscover a room that this AI has left.
+    sqlx::query("DELETE FROM cloud_members WHERE conversation=$1 AND account_id=$2")
+        .bind(history_chat)
+        .bind(ai)
         .execute(&f.state.pool)
         .await
         .unwrap();
@@ -681,6 +953,51 @@ async fn resources_enforce_scope_cas_applied_binding_and_source_tombstones() {
         summary_save.clone(),
     )
     .await;
+    // A previously committed private message can outlive its group reference.
+    let late_source = Uuid::new_v4();
+    sqlx::query("INSERT INTO cloud_messages(id,conversation,sender,body,context_reference) VALUES($1,$2,$3,'private continuation','{\"stale\":true}')")
+        .bind(late_source).bind(cid).bind(human).execute(&f.state.pool).await.unwrap();
+    let late_id = Uuid::new_v4();
+    let mut late = summary_save.clone();
+    late["requestId"] = json!(Uuid::new_v4());
+    late["sources"][0]["messageId"] = json!(late_source);
+    let mut envelope = sealed(ai, &dn, cid, late_id, 1);
+    envelope["roomId"] = late["sealed"]["roomId"].clone();
+    late["sealed"] = envelope;
+    let (status, response) = api
+        .call(
+            &hn,
+            Method::PUT,
+            &format!("/crypto/resources/{late_id}"),
+            late,
+        )
+        .await;
+    assert_eq!(status, 409, "{response}");
+    assert!(
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM cloud_crypto_resources WHERE item_id=$1)"
+        )
+        .bind(late_id.to_string())
+        .fetch_one(&f.state.pool)
+        .await
+        .unwrap()
+    );
+    // Startup also reconciles live records left by an earlier server, once.
+    let mut tx = f.state.pool.begin().await.unwrap();
+    sqlx::query("UPDATE cloud_messages SET context_reference='{\"stale\":true}' WHERE id=$1")
+        .bind(source)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        crate::crypto_resources::reconcile_stale_sources(&mut tx)
+            .await
+            .unwrap();
+    }
+    let repaired: i64 = sqlx::query_scalar("SELECT count(*) FROM cloud_crypto_resources WHERE item_id=ANY($1) AND sealed IS NULL AND tombstone='stale' AND revision=2")
+        .bind(vec![memory.to_string(), summary.to_string()]).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(repaired, 2);
+    tx.rollback().await.unwrap();
     api.ok(
         h,
         Method::POST,
@@ -2042,11 +2359,16 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
     let item_path = format!("/crypto/history-migrations/{id}/items/message/{mid}");
     api.ok(ha, Method::PUT, &item_path, conversion.clone())
         .await;
+    let survivor = registered(&api, ha, *a).await;
     api.ok(
         ha,
         Method::POST,
         &format!("/crypto/devices/{device}/revoke"),
-        json!({}),
+        api.command(
+            *a,
+            "revoke",
+            json!({"deviceId":survivor,"accountId":a,"target":device}),
+        ),
     )
     .await;
     assert_eq!(
@@ -2152,5 +2474,87 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
     .await;
     assert_eq!(api.call(ha, Method::GET, &path, Value::Null).await.0, 403);
     drop(api);
+    f.close().await;
+}
+#[tokio::test]
+async fn legacy_upgrade_preserves_archives_and_requires_independent_one_time_admission() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut tx = f.state.pool.begin().await.unwrap();
+    let schema = format!("upgrade_{}", Uuid::new_v4().simple());
+    sqlx::raw_sql(&format!(
+        "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema}"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let migrations = crate::db::migrator();
+    for migration in migrations.iter().take_while(|m| m.version < 14) {
+        sqlx::raw_sql(&migration.sql)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    let account = Uuid::new_v4();
+    let device = Uuid::new_v4().to_string();
+    let version = Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts(id,name) VALUES($1,'fixture')")
+        .bind(account)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_crypto_backups(account_id,version,algorithm,auth_data) VALUES($1,$2,'v1','{}')").bind(account).bind(version).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO cloud_crypto_recovery VALUES($1,$2,'archived')")
+        .bind(account)
+        .bind(version.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO cloud_crypto_recovery_history VALUES($1,$2,'archived')")
+        .bind(account)
+        .bind(version.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO cloud_crypto_devices(account_id,device_id,device_keys) VALUES($1,$2,$3)",
+    )
+    .bind(account)
+    .bind(&device)
+    .bind(json!({"keys":{format!("ed25519:{device}"):"pinned"}}))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0014_device_authority.sql"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let state=sqlx::query("SELECT b.sealed,d.authorized,r.enrollment_key,h.ciphertext FROM cloud_crypto_devices d JOIN cloud_crypto_recovery r USING(account_id) JOIN cloud_crypto_backups b USING(account_id) JOIN cloud_crypto_recovery_history h USING(account_id)").fetch_one(&mut *tx).await.unwrap();
+    assert!(state.get::<bool, _>(0));
+    assert!(!state.get::<bool, _>(1));
+    assert!(state.get::<Option<String>, _>(2).is_none());
+    assert_eq!(state.get::<String, _>(3), "archived");
+    let sql = include_str!("../../scripts/enroll-legacy-device.sql");
+    let start = sql.find("WITH candidate").unwrap();
+    let end = start + sql[start..].find(';').unwrap();
+    let update = sql[start..end]
+        .replace(":'account'", "$1")
+        .replace(":'device'", "$2")
+        .replace(":'fingerprint'", "$3");
+    for (fp, count) in [("unconfirmed", 0), ("pinned", 1), ("pinned", 0)] {
+        assert_eq!(
+            sqlx::query(&update)
+                .bind(account)
+                .bind(&device)
+                .bind(fp)
+                .execute(&mut *tx)
+                .await
+                .unwrap()
+                .rows_affected(),
+            count
+        );
+    }
+    tx.rollback().await.unwrap();
     f.close().await;
 }

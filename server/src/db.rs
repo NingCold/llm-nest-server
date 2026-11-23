@@ -101,6 +101,13 @@ pub fn migrator() -> sqlx_core::migrate::Migrator {
                 include_str!("../migrations/0013_crypto_device_lists_version.sql").into(),
                 false,
             ),
+            Migration::new(
+                14,
+                "human device authority".into(),
+                MigrationType::Simple,
+                include_str!("../migrations/0014_device_authority.sql").into(),
+                false,
+            ),
         ]
         .into(),
         ..Migrator::DEFAULT

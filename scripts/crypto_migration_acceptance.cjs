@@ -101,6 +101,7 @@ exports.run = async c => {
   const attachments = load(path.join(fixture, 'crypto/attachments.cjs'));
   engine.seed({ ...a, sdk });
   try {
+    await engine.syncCrypto();
     const file = await engine.createRecoveryFile(); await engine.commitRecoveryFile(file);
     const recoveryDigest = sha(JSON.stringify(file));
     const preview = await migration.previewMigration(conversation.id);

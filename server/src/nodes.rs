@@ -1052,6 +1052,7 @@ async fn cancel(
 pub async fn recover(pool: &sqlx::PgPool) -> Result<()> {
     let mut tx = pool.begin().await?;
     lock(&mut tx).await?;
+    crate::crypto_resources::reconcile_stale_sources(&mut tx).await?;
     sqlx::query("UPDATE cloud_summary_calls SET state='interrupted',finished_at=now() WHERE state='running'").execute(&mut *tx).await?;
     sqlx::query("UPDATE cloud_ai_bindings SET connection_id=NULL")
         .execute(&mut *tx)

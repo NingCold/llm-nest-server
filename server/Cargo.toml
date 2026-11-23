@@ -25,6 +25,7 @@ sqlx-postgres = { version = "=0.8.6", default-features = false, features = ["uui
 argon2 = "0.5.3"
 rand = "0.8"
 sha2 = "0.10"
+ed25519-dalek = "3"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
 tower-http = { version = "0.6", features = ["fs", "limit"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

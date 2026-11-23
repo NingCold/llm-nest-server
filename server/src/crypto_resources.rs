@@ -163,6 +163,8 @@ async fn audience(tx: &mut Tx<'_>, q: &Scope) -> Result<Value> {
         "{:x}",
         Sha256::digest(
             serde_json::to_vec(&json!([
+                // Rotate material send sessions and refuse writes prepared under the old sharing policy.
+                "scoped-material-keys-v2",
                 key(q),
                 conversation_revision,
                 administrators_revision,
@@ -172,6 +174,14 @@ async fn audience(tx: &mut Tx<'_>, q: &Scope) -> Result<Value> {
         )
     );
     Ok(json!({"accounts":accounts,"revision":revision}))
+}
+pub(crate) async fn profile_audience_revision(tx: &mut Tx<'_>, ai_id: Uuid) -> Result<Value> {
+    let scope = Scope {
+        ai_id,
+        conversation_id: None,
+        kind: "profile".into(),
+    };
+    Ok(audience(tx, &scope).await?["revision"].take())
 }
 async fn participants(
     State(s): State<Arc<AppState>>,
@@ -213,8 +223,9 @@ async fn sources(
             .revision
             .parse()
             .map_err(|_| AppError::bad("来源版本无效"))?;
-        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_messages WHERE id=$1 AND conversation=$2 AND revision=$3 AND NOT withdrawn AND status='committed')").bind(crypto::uid(&source.message_id)?).bind(cid).bind(rev).fetch_one(&mut **tx).await?;
-        if !valid {
+        if !crate::consciousness::valid_message(tx, cid, crypto::uid(&source.message_id)?, rev)
+            .await?
+        {
             return Err(AppError::conflict("资料来源已失效"));
         }
     }
@@ -430,6 +441,27 @@ pub(crate) async fn source_changed(tx: &mut Tx<'_>, mid: Uuid) -> Result<()> {
     let rows=sqlx::query("UPDATE cloud_crypto_resources SET sealed=NULL,tombstone='stale',revision=revision+1,material_revision=$2,updated_at=now() WHERE tombstone IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(sources) s WHERE s->>'messageId'=$1::text) RETURNING ai_id,conversation").bind(mid).bind(Uuid::new_v4()).fetch_all(&mut **tx).await?;
     for r in rows {
         changed(tx, r.get("ai_id"), r.get("conversation")).await?;
+    }
+    Ok(())
+}
+
+/// Repair live resources accepted after a reference had already gone stale on older servers.
+pub(crate) async fn reconcile_stale_sources(tx: &mut Tx<'_>) -> Result<()> {
+    let scopes = sqlx::query(
+        "WITH repaired AS (
+            UPDATE cloud_crypto_resources r SET sealed=NULL,tombstone='stale',
+                revision=revision+1,material_revision=gen_random_uuid(),updated_at=now()
+            WHERE r.tombstone IS NULL AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(r.sources) s
+                JOIN cloud_messages m ON m.id=(s->>'messageId')::uuid
+                WHERE m.context_reference @> '{\"stale\":true}'::jsonb
+            ) RETURNING ai_id,conversation
+        ) SELECT DISTINCT ai_id,conversation FROM repaired",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for scope in scopes {
+        changed(tx, scope.get("ai_id"), scope.get("conversation")).await?;
     }
     Ok(())
 }

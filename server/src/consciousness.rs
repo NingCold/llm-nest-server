@@ -84,7 +84,12 @@ async fn is_member(tx: &mut Tx<'_>, cid: Uuid, actor: Uuid) -> Result<bool> {
     .fetch_one(&mut **tx)
     .await?)
 }
-async fn valid_message(tx: &mut Tx<'_>, cid: Uuid, id: Uuid, revision: i64) -> Result<bool> {
+pub(crate) async fn valid_message(
+    tx: &mut Tx<'_>,
+    cid: Uuid,
+    id: Uuid,
+    revision: i64,
+) -> Result<bool> {
     Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_messages WHERE id=$1 AND conversation=$2 AND revision=$3 AND status='committed' AND NOT withdrawn AND NOT coalesce((context_reference->>'stale')::boolean,false))").bind(id).bind(cid).bind(revision).fetch_one(&mut **tx).await?)
 }
 pub(crate) async fn scoped_valid(

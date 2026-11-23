@@ -5,7 +5,7 @@
  */
 const { spawn, spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -75,7 +75,8 @@ async function outgoing(s, r) {
   if (r.type === sdk.RequestType.ToDevice) Object.assign(body, { event_type: r.event_type, txn_id: r.txn_id });
   if (r.type === sdk.RequestType.KeysBackup) body.version = r.version;
   const kind = ['keysUpload', 'keysQuery', 'keysClaim', 'toDevice', 'signatures', 'roomMessage', 'keysBackup'][r.type];
-  const response = await http(s, '/crypto/requests', 'POST', { deviceId: s.device, requestId: r.id || randomUUID(), kind, body });
+  const proof = kind === 'keysBackup' ? await deviceProof(s, kind, body) : undefined;
+  const response = await http(s, '/crypto/requests', 'POST', { deviceId: s.device, requestId: r.id || randomUUID(), kind, body, proof });
   if (r.id) await s.machine.markRequestAsSent(r.id, r.type, JSON.stringify(response));
 }
 async function flush(s) { for (const r of await s.machine.outgoingRequests()) await outgoing(s, r); }
@@ -154,7 +155,7 @@ async function bootstrap(s) {
   if (b.uploadKeysRequest) await outgoing(s, b.uploadKeysRequest);
   const body = JSON.parse(b.uploadSigningKeysRequest.body);
   s.master = Object.values(body.master_key.keys)[0];
-  await http(s, '/crypto/requests', 'POST', { deviceId: s.device, requestId: randomUUID(), kind: 'signingKeys', body });
+  await http(s, '/crypto/requests', 'POST', { deviceId: s.device, requestId: randomUUID(), kind: 'signingKeys', body, proof: await deviceProof(s, 'signingKeys', body) });
   await outgoing(s, b.uploadSignaturesRequest);
   await query(s, [s.account]);
 }
@@ -204,6 +205,46 @@ function canonical(value) {
 async function sign(s, envelope) {
   envelope.deviceKeys = { ed25519: s.machine.identityKeys.ed25519.toBase64(), curve25519: s.machine.identityKeys.curve25519.toBase64() };
   envelope.signatures = JSON.parse((await s.machine.sign(canonical(envelope))).asJSON());
+}
+const statement = (account, action, value) => 'llmn.authority.v1\n' + canonical([account, action, value]);
+async function deviceProof(s, action, value) {
+  const signatures = await s.machine.sign(statement(s.account, action, [s.device, value]));
+  return JSON.parse(signatures.asJSON())[userId(s.account)][`ed25519:${s.device}`];
+}
+async function command(s, action, fields) {
+  const body = { deviceId: s.device, ...fields };
+  return { ...body, proof: await deviceProof(s, action, body) };
+}
+const b64 = bytes => Buffer.from(bytes).toString('base64').replace(/=+$/, '');
+async function beginBackup(s, expectedVersion) {
+  const key = sdk.BackupDecryptionKey.createRandomKey(), version = randomUUID();
+  const auth_data = { public_key: key.megolmV1PublicKey.publicKeyBase64 };
+  auth_data.signatures = JSON.parse((await s.machine.sign(canonical(auth_data))).asJSON());
+  await http(s, '/crypto/backup', 'PUT', await command(s, 'backup', { expectedVersion, version, algorithm: 'm.megolm_backup.v1.curve25519-aes-sha2', auth_data }));
+  await s.machine.saveBackupDecryptionKey(key, version);
+  await s.machine.enableBackupV1(auth_data.public_key, version);
+  return { version, auth_data };
+}
+async function restoreHistory(s, version) {
+  const backup = await s.machine.getBackupKeys();
+  assert.equal(backup.backupVersion, version);
+  const keys = await http(s, `/crypto/backup/keys?version=${version}`), restored = new Map();
+  for (const [room, data] of Object.entries(keys.rooms)) {
+    const sessions = new Map();
+    for (const [id, { session_data }] of Object.entries(data.sessions)) {
+      const { ephemeral, mac, ciphertext } = session_data;
+      sessions.set(id, JSON.parse(backup.decryptionKey.decryptV1(ephemeral, mac, ciphertext)));
+    }
+    restored.set(new sdk.RoomId(room), sessions);
+  }
+  await s.machine.importBackedUpRoomKeys(restored, () => {}, version);
+}
+async function readRecovery(s, version, media) {
+  const saved = await http(s, `/crypto/recovery?version=${version}`);
+  assert.equal(saved.version,version);
+  const plain = sdk.Attachment.decrypt(new sdk.EncryptedAttachment(Buffer.from(saved.ciphertext, 'base64'), media));
+  try { await s.machine.importSecretsBundle(sdk.SecretsBundle.from_json(JSON.parse(Buffer.from(plain).toString()))); }
+  finally { plain.fill(0); }
 }
 async function waitFor(read, accept, description) {
   for (let i = 0; i < 100; i++) {
@@ -566,10 +607,10 @@ async function main() {
   const inner = { version: 1, server: origin, kind: 'message', conversationId: cid, conversationRevision: enabled.revision, messageId, senderId: a.account, revision: '1', text: marker, replyTo: null, mentions: [], runId: null, sequence: null };
   const sealed = { version: 1, roomId: roomId(cid), sender: userId(a.account), deviceId: a.device, eventId: `$${messageId}.1.final`, content: JSON.parse(await a.machine.encryptRoomEvent(new sdk.RoomId(roomId(cid)), 'com.llmn.content.v1', JSON.stringify(inner))) };
   await sign(a, sealed);
-  const command = { deviceId: a.device, requestId: randomUUID(), messageId, text: '', sealed, expectedConversationRevision: enabled.revision };
-  const sent = await http(a, `/chat/conversations/${cid}/messages`, 'POST', command);
+  const messageCommand = { deviceId: a.device, requestId: randomUUID(), messageId, text: '', sealed, expectedConversationRevision: enabled.revision };
+  const sent = await http(a, `/chat/conversations/${cid}/messages`, 'POST', messageCommand);
   assert.equal(sent.id, messageId);
-  assert.equal((await http(a, `/chat/conversations/${cid}/messages`, 'POST', command)).id, messageId);
+  assert.equal((await http(a, `/chat/conversations/${cid}/messages`, 'POST', messageCommand)).id, messageId);
   const page = await http(b, `/chat/conversations/${cid}/messages`);
   assert.equal(page.messages.at(-1).text, '');
   assert.equal((await decrypt(b, page.messages.at(-1).sealed)).text, marker);
@@ -583,32 +624,29 @@ async function main() {
   const untrusted = await device(second);
   await assert.rejects(() => decrypt(untrusted, sealed));
   phase = 'backup';
-  const backupKey = sdk.BackupDecryptionKey.createRandomKey(), version = randomUUID();
-  const auth_data = { public_key: backupKey.megolmV1PublicKey.publicKeyBase64 };
-  auth_data.signatures = JSON.parse((await b.machine.sign(JSON.stringify(auth_data))).asJSON());
-  await http(b, '/crypto/backup', 'PUT', { deviceId: b.device, expectedVersion: null, version, algorithm: 'm.megolm_backup.v1.curve25519-aes-sha2', auth_data });
-  await b.machine.saveBackupDecryptionKey(backupKey, version);
-  await b.machine.enableBackupV1(auth_data.public_key, version);
+  const { version, auth_data } = await beginBackup(b, null);
   const backup = await b.machine.backupRoomKeys(); assert(backup); await outgoing(b, backup);
   const bundle = await b.machine.exportSecretsBundle(), encoded = sdk.Attachment.encrypt(Buffer.from(JSON.stringify(bundle.to_json())));
   const recoveryVersion = randomUUID(), media = encoded.mediaEncryptionInfo;
-  await http(b, '/crypto/recovery', 'PUT', { deviceId: b.device, expectedVersion: null, version: recoveryVersion, ciphertext: Buffer.from(encoded.encryptedData).toString('base64') });
+  const fileKey = randomBytes(32);
+  await http(b, '/crypto/recovery', 'PUT', await command(b, 'recovery', { expectedVersion: null, version: recoveryVersion, ciphertext: Buffer.from(encoded.encryptedData).toString('base64'), backupVersion: version, enrollmentKey: b64(ed25519.getPublicKey(fileKey)) }));
   const recovered = await http(untrusted, '/crypto/recovery');
   phase = 'recovery';
   const plain = sdk.Attachment.decrypt(new sdk.EncryptedAttachment(Buffer.from(recovered.ciphertext, 'base64'), media));
   await untrusted.machine.importSecretsBundle(sdk.SecretsBundle.from_json(JSON.parse(Buffer.from(plain).toString())));
   plain.fill(0);
   const recoveredBackup = await untrusted.machine.getBackupKeys();
+  const fingerprint = untrusted.machine.identityKeys.ed25519.toBase64();
+  const grant = [recoveryVersion, untrusted.device, fingerprint];
+  assert.equal((await http(untrusted, `/crypto/authority/devices/${untrusted.device}`)).authorized, false);
+  await http(untrusted, '/crypto/authority/enroll', 'POST', { deviceId: untrusted.device, target: untrusted.device, fingerprint, recoveryVersion,
+    recoveryProof: b64(ed25519.sign(Buffer.from(statement(b.account, 'recover', grant)), fileKey)), proof: await deviceProof(untrusted, 'accept', grant) });
+  fileKey.fill(0);
+  assert.equal((await http(untrusted, `/crypto/authority/devices/${untrusted.device}`)).authorized, true);
   assert(recoveredBackup.decryptionKey, 'the new device must recover its own backup private key from SecretsBundle');
   assert.equal(recoveredBackup.backupVersion, version, 'the recovered backup version must match the published backup');
   assert.equal(recoveredBackup.decryptionKey.megolmV1PublicKey.publicKeyBase64, auth_data.public_key, 'the recovered private key must match the published backup identity');
-  const keys = await http(untrusted, '/crypto/backup/keys'), restored = new Map();
-  for (const [room, data] of Object.entries(keys.rooms)) {
-    const sessions = new Map();
-    for (const [id, record] of Object.entries(data.sessions)) sessions.set(id, JSON.parse(recoveredBackup.decryptionKey.decryptV1(record.session_data.ephemeral, record.session_data.mac, record.session_data.ciphertext)));
-    restored.set(new sdk.RoomId(room), sessions);
-  }
-  await untrusted.machine.importBackedUpRoomKeys(restored, () => {}, recoveredBackup.backupVersion);
+  await restoreHistory(untrusted,version);
   await query(untrusted, [a.account, b.account]);
   const knownSender = await untrusted.machine.getDevice(new sdk.UserId(userId(a.account)), new sdk.DeviceId(a.device));
   assert(knownSender, 'restored SDK must have the original sender device');
@@ -627,10 +665,45 @@ async function main() {
   phase = 'encrypted groups and historical keys';
   await require('./crypto_social_acceptance.cjs').human({ a, b, http, sdk, signup, device, bootstrap, trust, sync, decrypt, sql, roomId, userId, origin, sign, outgoing, query });
   const modelCalls = await agentFlow(a, b);
-  await http(b, `/crypto/devices/${untrusted.device}/revoke`, 'POST', {});
+  phase = 'sealed history and recovery across backup rotation';
+  await http(b, `/crypto/devices/${untrusted.device}/revoke`, 'POST', await command(b, 'revoke', { accountId: b.account, target: untrusted.device }));
+  assert.equal((await http(b, `/crypto/sync?deviceId=${b.device}&after=0`)).llmn_active_backup, null, 'revocation seals the old backup');
+  assert.equal((await http(b, `/crypto/backup?version=${version}`)).version, version, 'old history remains available by version');
   await http(untrusted, `/crypto/sync?deviceId=${untrusted.device}&after=0`, 'GET', undefined, 403);
-  for (const s of [a, b, untrusted]) s.machine.close();
+  const archive = await http(b, `/crypto/backup/keys?version=${version}`);
+  await b.machine.disableBackup();
+  const fresh = await beginBackup(b, version);
+  assert.notEqual(fresh.auth_data.public_key, auth_data.public_key);
+  await share(a, b, cid);
+  const nextText = 'after backup rotation', nextEnvelope = { version:1, roomId:roomId(cid), sender:userId(a.account), deviceId:a.device, eventId:`$${randomUUID()}.1.final`, content:JSON.parse(await a.machine.encryptRoomEvent(new sdk.RoomId(roomId(cid)),'com.llmn.content.v1',JSON.stringify({text:nextText}))) };
+  await sign(a,nextEnvelope);
+  assert.notEqual(nextEnvelope.content.session_id,sealed.content.session_id);
+  assert.equal((await decrypt(b,nextEnvelope)).text,nextText);
+  let batches = 0;
+  for (let r; (r = await b.machine.backupRoomKeys());) { await outgoing(b,r); batches++; }
+  assert(batches);
+  assert.deepEqual(await http(b, `/crypto/backup/keys?version=${version}`), archive);
+  assert.ok((await http(b, `/crypto/backup/keys?version=${fresh.version}`)).rooms[roomId(cid)].sessions[nextEnvelope.content.session_id]);
+  const nextFileVersion = randomUUID(), nextSeed = randomBytes(32);
+  const nextFile = sdk.Attachment.encrypt(Buffer.from(JSON.stringify((await b.machine.exportSecretsBundle()).to_json())));
+  await http(b,'/crypto/recovery','PUT',await command(b,'recovery',{expectedVersion:recoveryVersion,version:nextFileVersion,backupVersion:fresh.version,ciphertext:Buffer.from(nextFile.encryptedData).toString('base64'),enrollmentKey:b64(ed25519.getPublicKey(nextSeed))}));
+  const archiveReader = await device(second), nextReader = await device(second);
+  await readRecovery(archiveReader,recoveryVersion,media);
+  await restoreHistory(archiveReader,version);
+  await query(archiveReader,[a.account]);
+  assert.equal((await decrypt(archiveReader,sealed)).text,marker);
+  assert.equal((await http(archiveReader,`/crypto/authority/devices/${archiveReader.device}`)).authorized,false);
+  await assert.rejects(()=>decrypt(archiveReader,nextEnvelope));
+  await readRecovery(nextReader,nextFileVersion,nextFile.mediaEncryptionInfo);
+  const nextFingerprint = nextReader.machine.identityKeys.ed25519.toBase64();
+  const nextGrant = [nextFileVersion,nextReader.device,nextFingerprint];
+  await http(nextReader,'/crypto/authority/enroll','POST',{deviceId:nextReader.device,target:nextReader.device,fingerprint:nextFingerprint,recoveryVersion:nextFileVersion,recoveryProof:b64(ed25519.sign(Buffer.from(statement(b.account,'recover',nextGrant)),nextSeed)),proof:await deviceProof(nextReader,'accept',nextGrant)});
+  nextSeed.fill(0);
+  await restoreHistory(nextReader,fresh.version);
+  await query(nextReader,[a.account]);
+  assert.equal((await decrypt(nextReader,nextEnvelope)).text,nextText);
+  for (const s of [a, b, untrusted,archiveReader,nextReader]) s.machine.close();
   console.log('PASS: official SDK cross-signing, Olm distribution, signed private ciphertext, tamper rejection, idempotent retry, no plaintext in PostgreSQL, login alone cannot decrypt, recovery to a new device, WASM/Rust bidirectional interoperability, revoked device rejected.');
-  fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: process.argv.includes('--social-only') ? 'social' : 'full', modelCalls, directorySync, database, date: new Date().toISOString() }));
+  fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: process.argv.includes('--social-only') ? 'social' : 'full', modelCalls, directorySync, backupRotation:{oldFileReadArchivedHistory:true,oldFileCannotReadNewSession:true,newFileAdmittedFreshDevice:true,newFileReadRotatedSession:true}, database, date: new Date().toISOString() }));
 }
 main().catch(error => { console.error(`FAIL ${phase}:`, error?.stack || error?.description || error?.message || String(error)); process.exitCode = 1; }).finally(() => { children.forEach(child => child.kill()); modelServer?.close(); server.kill(); fs.closeSync(log); });

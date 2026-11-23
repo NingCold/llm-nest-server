@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
+#[path = "crypto_authority.rs"]
+mod authority;
 pub(crate) type Tx<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 pub(crate) struct Actor {
     pub id: Uuid,
@@ -83,6 +85,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/crypto/devices", post(register).get(devices))
         .route("/crypto/devices/{id}/revoke", post(revoke))
+        .route("/crypto/authority/devices/{id}", get(authority::status))
+        .route("/crypto/authority/enroll", post(authority::enroll))
         .route("/crypto/requests", post(request))
         .route("/crypto/sync", get(sync))
         .route("/node/crypto/conversations", get(conversations))
@@ -137,9 +141,10 @@ async fn register(
     } else {
         sqlx::query("INSERT INTO cloud_crypto_devices(account_id,device_id,node_id,binding_version,display_name) VALUES($1,$2,$3,$4,$5)").bind(a.id).bind(&v.device_id).bind(a.node.as_ref().map(|n|n.node)).bind(a.node.as_ref().map(|n|n.version)).bind(v.name).execute(&mut *tx).await?;
     }
+    let (authorized, fingerprint) = authority::record(&mut tx, a.id, &v.device_id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"userId":matrix_user(a.id),"deviceId":v.device_id}),
+        json!({"userId":matrix_user(a.id),"deviceId":v.device_id,"authorized":authorized,"fingerprint":fingerprint}),
     ))
 }
 async fn devices(
@@ -164,24 +169,46 @@ async fn revoke(
     h: HeaderMap,
     Path(id): Path<String>,
     Query(q): Query<DeviceQuery>,
+    Json(v): Json<Value>,
 ) -> Result<Json<Value>> {
     let mut tx = s.pool.begin().await?;
     nodes::lock(&mut tx).await?;
     let a = actor(&s, &h, &mut tx).await?;
     let target = q.account_id.unwrap_or(a.id);
+    if a.node.is_none() {
+        if v["accountId"] != target.to_string() || v["target"] != id {
+            return Err(AppError::forbidden());
+        }
+        authority::command(&mut tx, &a, "revoke", &v).await?;
+    }
     if target != a.id {
         if a.node.is_some() {
             return Err(AppError::forbidden());
         }
         nodes::admin(&mut tx, target, a.id).await?;
     }
-    sqlx::query(
-        "UPDATE cloud_crypto_devices SET revoked=true WHERE account_id=$1 AND device_id=$2",
+    if a.node.is_none() && target == a.id && v["deviceId"] == id {
+        return Err(AppError::conflict("请用另一台可信设备撤销本机"));
+    }
+    let changed=sqlx::query(
+        "UPDATE cloud_crypto_devices SET revoked=true WHERE account_id=$1 AND device_id=$2 AND NOT revoked",
     )
     .bind(target)
     .bind(&id)
     .execute(&mut *tx)
     .await?;
+    if changed.rows_affected() > 0 && a.node.is_none() && target == a.id {
+        sqlx::query(
+            "UPDATE cloud_crypto_backups SET sealed=true WHERE account_id=$1 AND NOT sealed",
+        )
+        .bind(target)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE cloud_crypto_recovery SET enrollment_key=NULL WHERE account_id=$1")
+            .bind(target)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query("DELETE FROM cloud_crypto_inbox WHERE account_id=$1 AND device_id=$2")
         .bind(target)
         .bind(id)
@@ -197,6 +224,7 @@ struct CryptoRequest {
     request_id: String,
     kind: String,
     body: Value,
+    proof: Option<String>,
 }
 async fn request(
     State(s): State<Arc<AppState>>,
@@ -211,6 +239,18 @@ async fn request(
     nodes::lock(&mut tx).await?;
     let a = actor(&s, &h, &mut tx).await?;
     device(&mut tx, &a, &v.device_id).await?;
+    if v.kind == "keysBackup" {
+        authority::proof(
+            &mut tx,
+            &a,
+            &v.device_id,
+            "keysBackup",
+            &v.body,
+            v.proof.as_deref(),
+            true,
+        )
+        .await?;
+    }
     if v.kind == "toDevice" {
         history_delivery_authority(&mut tx, &a, &v.body).await?;
     }
@@ -220,7 +260,29 @@ async fn request(
         "keysQuery" => query_keys(&mut tx, &v.body).await?,
         "keysClaim" => claim(&mut tx, &a, &v.body).await?,
         "toDevice" => to_device(&mut tx, &a, &v.body).await?,
-        "signingKeys" => signing(&mut tx, &a, &v.body).await?,
+        "signingKeys" => {
+            if a.node.is_none() {
+                let fresh:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM cloud_crypto_signing_keys WHERE account_id=$1) AND NOT EXISTS(SELECT 1 FROM cloud_crypto_recovery WHERE account_id=$1) AND NOT EXISTS(SELECT 1 FROM cloud_crypto_backups WHERE account_id=$1)").bind(a.id).fetch_one(&mut *tx).await?;
+                authority::proof(
+                    &mut tx,
+                    &a,
+                    &v.device_id,
+                    "signingKeys",
+                    &v.body,
+                    v.proof.as_deref(),
+                    !fresh,
+                )
+                .await?;
+                if fresh
+                    && v.body["master_key"]["keys"]
+                        .as_object()
+                        .is_some_and(|k| !k.is_empty())
+                {
+                    sqlx::query("UPDATE cloud_crypto_devices SET authorized=true WHERE account_id=$1 AND device_id=$2").bind(a.id).bind(&v.device_id).execute(&mut *tx).await?;
+                }
+            }
+            signing(&mut tx, &a, &v.body).await?
+        }
         "signatures" => signatures(&mut tx, &a, &v.body).await?,
         "keysBackup" => backup(&mut tx, &a, &v.body).await?,
         _ => return Err(AppError::bad("不支持的加密请求类型")),
@@ -311,12 +373,22 @@ async fn query_keys(tx: &mut Tx<'_>, v: &Value) -> Result<Value> {
         let ids = requested
             .as_array()
             .ok_or_else(|| AppError::bad("查询设备无效"))?;
-        let rows=sqlx::query("SELECT device_id,device_keys FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND device_keys IS NOT NULL AND (node_id IS NULL OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version))").bind(aid).fetch_all(&mut **tx).await?;
+        let rows=sqlx::query("SELECT device_id,device_keys,authorized OR node_id IS NOT NULL FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND device_keys IS NOT NULL AND (node_id IS NULL OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version))").bind(aid).fetch_all(&mut **tx).await?;
         let mut keys = serde_json::Map::new();
         for r in rows {
             let id: String = r.get(0);
             if ids.is_empty() || ids.iter().any(|i| i.as_str() == Some(&id)) {
-                keys.insert(id, r.get(1));
+                let mut value: Value = r.get(1);
+                if !r.get::<bool, _>(2) {
+                    // An unadmitted device stays discoverable for manual fingerprint verification.
+                    let own = format!("ed25519:{id}");
+                    let sig = value["signatures"][u].get(&own).cloned();
+                    value["signatures"] = json!({});
+                    if let Some(sig) = sig {
+                        value["signatures"][u][own] = sig;
+                    }
+                }
+                keys.insert(id, value);
             }
         }
         devices.insert(u.clone(), Value::Object(keys));
@@ -417,10 +489,22 @@ async fn history_delivery_authority(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Re
     if v["llmn_purpose"] != "aiAdminHistory" || a.node.is_none() {
         return Err(AppError::forbidden());
     }
-    for user in v["messages"]
+    if v["event_type"] != "m.room.encrypted" {
+        return Err(AppError::bad("历史密钥须经Olm密文投递"));
+    }
+    let scope = &v["llmn_chat_revisions"];
+    if !scope.as_object().is_some_and(|rooms| {
+        !rooms.is_empty()
+            && rooms.iter().all(|(id, revision)| {
+                Uuid::parse_str(id).is_ok()
+                    && revision.as_str().is_some_and(|r| r.parse::<i64>().is_ok())
+            })
+    }) {
+        return Err(AppError::bad("缺少有效的聊天历史范围"));
+    }
+    for (user, devices) in v["messages"]
         .as_object()
         .ok_or_else(|| AppError::bad("投递对象无效"))?
-        .keys()
     {
         let target = account(user)?;
         let admin: bool = sqlx::query_scalar(
@@ -433,8 +517,33 @@ async fn history_delivery_authority(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Re
         if !admin {
             return Err(AppError::forbidden());
         }
+        for device in devices
+            .as_object()
+            .ok_or_else(|| AppError::bad("投递设备无效"))?
+            .keys()
+        {
+            let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_crypto_devices WHERE account_id=$1 AND device_id=$2 AND authorized AND NOT revoked AND node_id IS NULL AND device_keys IS NOT NULL)")
+                .bind(target).bind(device).fetch_one(&mut **tx).await?;
+            if !valid {
+                return Err(AppError::forbidden());
+            }
+        }
+    }
+    if !chat_scope_current(tx, a.id, scope).await?
+        || crate::crypto_resources::profile_audience_revision(tx, a.id).await?
+            != v["llmn_audience_revision"]
+    {
+        return Err(AppError::conflict("聊天历史授权已变化"));
     }
     Ok(())
+}
+
+async fn chat_scope_current(tx: &mut Tx<'_>, ai: Uuid, scope: &Value) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT FROM jsonb_each_text($2) AS room(id,revision)
+         WHERE NOT EXISTS (SELECT FROM cloud_conversations c JOIN cloud_members m ON m.conversation=c.id
+           WHERE c.id=room.id::uuid AND c.crypto_enabled AND m.account_id=$1 AND c.revision::text=room.revision))"
+    ).bind(ai).bind(scope).fetch_one(&mut **tx).await?)
 }
 async fn to_device(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
     let event_type = field(v, "event_type")?;
@@ -458,14 +567,24 @@ async fn to_device(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
             .as_object()
             .ok_or_else(|| AppError::bad("投递设备无效"))?
         {
-            let ids:Vec<String>=sqlx::query_scalar("SELECT device_id FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND ($2='*' OR device_id=$2) AND (node_id IS NULL OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version))").bind(aid).bind(target).fetch_all(&mut **tx).await?;
+            let ids:Vec<String>=sqlx::query_scalar("SELECT device_id FROM cloud_crypto_devices d WHERE account_id=$1 AND NOT revoked AND ($2='*' OR device_id=$2) AND ($3 <> 'm.room.encrypted' OR authorized OR node_id IS NOT NULL) AND (node_id IS NULL OR EXISTS(SELECT 1 FROM cloud_ai_bindings b WHERE b.ai_id=d.account_id AND b.node_id=d.node_id AND b.version=d.binding_version))").bind(aid).bind(target).bind(event_type).fetch_all(&mut **tx).await?;
             for id in ids {
+                let mut event =
+                    json!({"sender":matrix_user(a.id),"type":event_type,"content":content});
+                if a.node.is_some() && event_type == "m.room.encrypted" {
+                    // The server sets this routing metadata, never the supplied Matrix content.
+                    event["llmn_route"] = if v["llmn_purpose"] == "aiAdminHistory" {
+                        json!({"chats":v["llmn_chat_revisions"],"audience":v["llmn_audience_revision"]})
+                    } else {
+                        json!("ordinary")
+                    };
+                }
                 sqlx::query(
                     "INSERT INTO cloud_crypto_inbox(account_id,device_id,event) VALUES($1,$2,$3)",
                 )
                 .bind(aid)
                 .bind(id)
-                .bind(json!({"sender":matrix_user(a.id),"type":event_type,"content":content}))
+                .bind(event)
                 .execute(&mut **tx)
                 .await?;
             }
@@ -555,7 +674,7 @@ async fn signatures(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
 async fn backup(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<Value> {
     let version = uid(field(v, "version")?)?;
     let exists: bool = sqlx::query_scalar(
-        "SELECT coalesce($2::uuid=(SELECT version FROM cloud_crypto_backups WHERE account_id=$1 ORDER BY created_at DESC LIMIT 1),false)",
+        "SELECT coalesce($2::uuid=(SELECT version FROM cloud_crypto_backups WHERE account_id=$1 AND NOT sealed ORDER BY created_at DESC LIMIT 1),false)",
     )
     .bind(a.id)
     .bind(version)
@@ -621,8 +740,48 @@ async fn sync(
         .unwrap_or("0")
         .parse()
         .map_err(|_| AppError::bad("同步游标无效"))?;
-    let rows=sqlx::query("SELECT id,event FROM cloud_crypto_inbox WHERE account_id=$1 AND device_id=$2 AND id>$3 ORDER BY id LIMIT 256").bind(a.id).bind(&q.device_id).bind(after).fetch_all(&mut *tx).await?;
+    let rows = sqlx::query(
+        "SELECT i.id,i.event, s.kind='ai' AS ai_sender FROM cloud_crypto_inbox i
+        JOIN accounts s ON s.id=substring(i.event->>'sender' from 2 for 36)::uuid
+        WHERE i.account_id=$1 AND i.device_id=$2 AND i.id>$3 ORDER BY i.id LIMIT 256",
+    )
+    .bind(a.id)
+    .bind(&q.device_id)
+    .bind(after)
+    .fetch_all(&mut *tx)
+    .await?;
     let next = rows.last().map_or(after, |r| r.get("id"));
+    let mut events = Vec::with_capacity(rows.len());
+    let mut audiences = std::collections::HashMap::new();
+    for row in rows {
+        let mut event: Value = row.get("event");
+        if row.get::<bool, _>("ai_sender") && event["type"] == "m.room.encrypted" {
+            let route = event.as_object_mut().unwrap().remove("llmn_route");
+            match route {
+                None if a.node.is_none() => continue, // Legacy unscoped AI envelopes cannot be classified.
+                Some(route) if route.is_object() => {
+                    let ai = account(field(&event, "sender")?)?;
+                    if let std::collections::hash_map::Entry::Vacant(entry) = audiences.entry(ai) {
+                        let admin: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_ai_admins WHERE ai_id=$1 AND administrator=$2)")
+                            .bind(ai).bind(a.id).fetch_one(&mut *tx).await?;
+                        let current = if admin {
+                            crate::crypto_resources::profile_audience_revision(&mut tx, ai).await?
+                        } else {
+                            Value::Null
+                        };
+                        entry.insert(current);
+                    }
+                    if audiences[&ai] != route["audience"]
+                        || !chat_scope_current(&mut tx, ai, &route["chats"]).await?
+                    {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        events.push(event);
+    }
     let keys = counts(&mut tx, a.id, &q.device_id).await?;
     let unused:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_crypto_one_time_keys WHERE account_id=$1 AND device_id=$2 AND fallback AND NOT used)").bind(a.id).bind(&q.device_id).fetch_one(&mut *tx).await?;
     let handover = if a.node.is_some() {
@@ -640,6 +799,15 @@ async fn sync(
             .fetch_one(&mut *tx)
             .await?;
     let directory_version = directory_version.to_string();
+    let active_backup:Option<Value>=sqlx::query_scalar("SELECT jsonb_build_object('version',version,'publicKey',auth_data->>'public_key') FROM cloud_crypto_backups WHERE account_id=$1 AND NOT sealed ORDER BY created_at DESC LIMIT 1").bind(a.id).fetch_optional(&mut *tx).await?;
+    let retired = active_backup.is_none()
+        && sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT FROM cloud_crypto_backups WHERE account_id=$1 AND sealed)",
+        )
+        .bind(a.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let (authorized, fingerprint) = authority::record(&mut tx, a.id, &q.device_id).await?;
     let changed: Vec<Uuid> = if q.device_lists_version.as_deref() == Some(&directory_version) {
         Vec::new()
     } else {
@@ -648,7 +816,7 @@ async fn sync(
             .await?
     };
     Ok(Json(
-        json!({"llmn_device_lists_version":directory_version,"llmn_handover_state":handover,"next_batch":next.to_string(),"to_device":{"events":rows.iter().map(|r|r.get::<Value,_>("event")).collect::<Vec<_>>()},"device_lists":{"changed":changed.into_iter().map(matrix_user).collect::<Vec<_>>(),"left":[]},"device_one_time_keys_count":keys,"device_unused_fallback_key_types":if unused{vec!["signed_curve25519"]}else{vec![]}}),
+        json!({"llmn_backup_retired":retired,"llmn_authorized":authorized,"llmn_fingerprint":fingerprint,"llmn_active_backup":active_backup,"llmn_device_lists_version":directory_version,"llmn_handover_state":handover,"next_batch":next.to_string(),"to_device":{"events":events},"device_lists":{"changed":changed.into_iter().map(matrix_user).collect::<Vec<_>>(),"left":[]},"device_one_time_keys_count":keys,"device_unused_fallback_key_types":if unused{vec!["signed_curve25519"]}else{vec![]}}),
     ))
 }
 
@@ -657,18 +825,26 @@ async fn sync(
 struct DeviceQuery {
     account_id: Option<Uuid>,
 }
-async fn backup_read(State(s): State<Arc<AppState>>, h: HeaderMap) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+struct BackupVersion {
+    version: Option<Uuid>,
+}
+async fn backup_read(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Query(q): Query<BackupVersion>,
+) -> Result<Json<Value>> {
     let mut tx = s.pool.begin().await?;
     let a = actor(&s, &h, &mut tx).await?;
     let r = sqlx::query(
-        "SELECT * FROM cloud_crypto_backups WHERE account_id=$1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM cloud_crypto_backups WHERE account_id=$1 AND ($2::uuid IS NULL OR version=$2) ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(a.id)
+    .bind(a.id).bind(q.version)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(AppError::not_found)?;
     Ok(Json(
-        json!({"version":r.get::<Uuid,_>("version"),"algorithm":r.get::<String,_>("algorithm"),"auth_data":r.get::<Value,_>("auth_data")}),
+        json!({"sealed":r.get::<bool,_>("sealed"),"version":r.get::<Uuid,_>("version"),"algorithm":r.get::<String,_>("algorithm"),"auth_data":r.get::<Value,_>("auth_data")}),
     ))
 }
 async fn backup_save(
@@ -676,20 +852,27 @@ async fn backup_save(
     h: HeaderMap,
     Json(v): Json<Value>,
 ) -> Result<Json<Value>> {
+    let mut tx = s.pool.begin().await?;
+    nodes::lock(&mut tx).await?;
+    let a = actor(&s, &h, &mut tx).await?;
+    device(&mut tx, &a, field(&v, "deviceId")?).await?;
+    authority::command(&mut tx, &a, "backup", &v).await?;
+    publish_backup(&mut tx, &a, &v).await?;
+    crate::handover::changed(&mut tx, a.id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"version":v["version"]})))
+}
+async fn publish_backup(tx: &mut Tx<'_>, a: &Actor, v: &Value) -> Result<()> {
     let version = uid(field(&v, "version")?)?;
     let algorithm = field(&v, "algorithm")?;
     if algorithm != "m.megolm_backup.v1.curve25519-aes-sha2" || !v["auth_data"].is_object() {
         return Err(AppError::bad("历史密钥备份格式无效"));
     }
-    let mut tx = s.pool.begin().await?;
-    nodes::lock(&mut tx).await?;
-    let a = actor(&s, &h, &mut tx).await?;
-    device(&mut tx, &a, field(&v, "deviceId")?).await?;
     let current = sqlx::query(
         "SELECT * FROM cloud_crypto_backups WHERE account_id=$1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(a.id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     if let Some(r) = &current
         && r.get::<Uuid, _>("version") == version
@@ -699,7 +882,7 @@ async fn backup_save(
         {
             return Err(AppError::conflict("同一备份版本不能替换公钥或认证数据"));
         }
-        return Ok(Json(json!({"version":version})));
+        return Ok(());
     }
     if current
         .as_ref()
@@ -714,20 +897,34 @@ async fn backup_save(
     )
     .bind(a.id)
     .bind(version)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?
     {
         return Err(AppError::conflict("不能恢复旧备份版本"));
     }
-    sqlx::query("INSERT INTO cloud_crypto_backups(account_id,version,algorithm,auth_data) VALUES($1,$2,$3,$4)").bind(a.id).bind(version).bind(algorithm).bind(&v["auth_data"]).execute(&mut *tx).await?;
-    crate::handover::changed(&mut tx, a.id).await?;
-    tx.commit().await?;
-    Ok(Json(json!({"version":version})))
+    if a.node.is_none() {
+        let key = field(&v["auth_data"], "public_key")?;
+        authority::backup_key(key)?;
+        let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_crypto_backups WHERE account_id=$1 AND rtrim(auth_data->>'public_key','=')=$2)").bind(a.id).bind(key).fetch_one(&mut **tx).await?;
+        if used {
+            return Err(AppError::conflict("新备份须使用全新的备份密钥"));
+        }
+    }
+    sqlx::query("UPDATE cloud_crypto_backups SET sealed=true WHERE account_id=$1")
+        .bind(a.id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("INSERT INTO cloud_crypto_backups(account_id,version,algorithm,auth_data) VALUES($1,$2,$3,$4)").bind(a.id).bind(version).bind(algorithm).bind(&v["auth_data"]).execute(&mut **tx).await?;
+    Ok(())
 }
-async fn backup_keys(State(s): State<Arc<AppState>>, h: HeaderMap) -> Result<Json<Value>> {
+async fn backup_keys(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Query(q): Query<BackupVersion>,
+) -> Result<Json<Value>> {
     let mut tx = s.pool.begin().await?;
     let a = actor(&s, &h, &mut tx).await?;
-    let version:Uuid=sqlx::query_scalar("SELECT version FROM cloud_crypto_backups WHERE account_id=$1 ORDER BY created_at DESC LIMIT 1").bind(a.id).fetch_optional(&mut *tx).await?.ok_or_else(AppError::not_found)?;
+    let version:Uuid=sqlx::query_scalar("SELECT version FROM cloud_crypto_backups WHERE account_id=$1 AND ($2::uuid IS NULL OR version=$2) ORDER BY created_at DESC LIMIT 1").bind(a.id).bind(q.version).fetch_optional(&mut *tx).await?.ok_or_else(AppError::not_found)?;
     let rows=sqlx::query("SELECT room_id,session_id,session_data FROM cloud_crypto_backup_sessions WHERE account_id=$1 AND version=$2").bind(a.id).bind(version).fetch_all(&mut *tx).await?;
     let mut out = json!({"rooms":{}});
     for r in rows {
@@ -740,11 +937,15 @@ async fn backup_keys(State(s): State<Arc<AppState>>, h: HeaderMap) -> Result<Jso
     }
     Ok(Json(out))
 }
-async fn recovery_read(State(s): State<Arc<AppState>>, h: HeaderMap) -> Result<Json<Value>> {
+async fn recovery_read(
+    State(s): State<Arc<AppState>>,
+    h: HeaderMap,
+    Query(q): Query<BackupVersion>,
+) -> Result<Json<Value>> {
     let mut tx = s.pool.begin().await?;
     let a = actor(&s, &h, &mut tx).await?;
-    let r = sqlx::query("SELECT version,ciphertext FROM cloud_crypto_recovery WHERE account_id=$1")
-        .bind(a.id)
+    let r = sqlx::query("SELECT version,ciphertext FROM cloud_crypto_recovery WHERE account_id=$1 AND $2::uuid IS NULL UNION ALL SELECT version,ciphertext FROM cloud_crypto_recovery_history WHERE account_id=$1 AND version=$2::uuid::text")
+        .bind(a.id).bind(q.version)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -772,15 +973,23 @@ async fn recovery_save(
     nodes::lock(&mut tx).await?;
     let a = actor(&s, &h, &mut tx).await?;
     device(&mut tx, &a, field(&v, "deviceId")?).await?;
-    let old =
-        sqlx::query("SELECT version,ciphertext FROM cloud_crypto_recovery WHERE account_id=$1")
-            .bind(a.id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    authority::command(&mut tx, &a, "recovery", &v).await?;
+    if a.node.is_none() {
+        authority::validate_key(&v)?;
+    }
+    let old = sqlx::query(
+        "SELECT version,ciphertext,enrollment_key FROM cloud_crypto_recovery WHERE account_id=$1",
+    )
+    .bind(a.id)
+    .fetch_optional(&mut *tx)
+    .await?;
     if let Some(r) = &old
         && r.get::<String, _>("version") == version
     {
-        if r.get::<String, _>("ciphertext") != ciphertext {
+        if r.get::<String, _>("ciphertext") != ciphertext
+            || r.get::<Option<String>, _>("enrollment_key").as_deref()
+                != v["enrollmentKey"].as_str()
+        {
             return Err(AppError::conflict("同一恢复版本不能替换密文"));
         }
         return Ok(Json(json!({"version":version})));
@@ -794,13 +1003,22 @@ async fn recovery_save(
         return Err(AppError::conflict("恢复资料版本已变化"));
     }
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM cloud_crypto_recovery_history WHERE account_id=$1 AND version=$2)").bind(a.id).bind(version).fetch_one(&mut *tx).await?{return Err(AppError::conflict("不能恢复旧的恢复资料版本"));}
+    if let Some(backup) = v.get("newBackup") {
+        publish_backup(&mut tx, &a, backup).await?;
+    }
+    if a.node.is_none() {
+        let active:Option<String>=sqlx::query_scalar("SELECT version::text FROM cloud_crypto_backups WHERE account_id=$1 AND NOT sealed ORDER BY created_at DESC LIMIT 1").bind(a.id).fetch_optional(&mut *tx).await?;
+        if active.is_none() || active.as_deref() != v["backupVersion"].as_str() {
+            return Err(AppError::conflict("备份已封存，请重新生成恢复文件"));
+        }
+    }
     sqlx::query("INSERT INTO cloud_crypto_recovery_history VALUES($1,$2,$3)")
         .bind(a.id)
         .bind(version)
         .bind(ciphertext)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO cloud_crypto_recovery VALUES($1,$2,$3) ON CONFLICT(account_id) DO UPDATE SET version=$2,ciphertext=$3").bind(a.id).bind(version).bind(ciphertext).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO cloud_crypto_recovery(account_id,version,ciphertext,enrollment_key) VALUES($1,$2,$3,$4) ON CONFLICT(account_id) DO UPDATE SET version=$2,ciphertext=$3,enrollment_key=$4").bind(a.id).bind(version).bind(ciphertext).bind(v["enrollmentKey"].as_str()).execute(&mut *tx).await?;
     crate::handover::changed(&mut tx, a.id).await?;
     tx.commit().await?;
     Ok(Json(json!({"version":version})))
