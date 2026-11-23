@@ -36,6 +36,14 @@ jobs:
     outputs:
       build_sha: ${{ steps.source.outputs.sha }}
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        ports: ['5432:5432']
+        env:
+          POSTGRES_DB: llmn_image_check
+          POSTGRES_PASSWORD: image-check-only
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       RUSTUP_TOOLCHAIN: 1.99.1
       WEB_VERSION: ${{ inputs.web_version }}
@@ -95,6 +103,15 @@ jobs:
         run: |
           image="llmn-server:${RELEASE_TAG:-candidate-$GITHUB_SHA}"
           docker build --tag "$image" --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" artifact/context
+          container=$(docker run --detach --network host --tmpfs /data:uid=10001,gid=10001 \
+            -e CLOUD_DATABASE_URL=postgres://postgres:image-check-only@127.0.0.1:5432/llmn_image_check \
+            -e CLOUD_BIND=127.0.0.1:8787 -e CLOUD_PUBLIC_URL=http://127.0.0.1:8787 \
+            -e CLOUD_MAIL_OUTBOX=/data/outbox "$image")
+          trap 'docker logs "$container"; docker stop "$container" >/dev/null; docker rm "$container" >/dev/null' EXIT
+          curl --fail --silent --show-error --retry 15 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:8787/health --output artifact/health.txt
+          [[ "$(cat artifact/health.txt)" == ok ]]
+          curl --fail --silent http://127.0.0.1:8787/ | cmp - artifact/context/web/index.html
           docker image inspect "$image" > artifact/image-manifest.json
           docker save "$image" | gzip > artifact/llmn-server-image.tar.gz
           cp LICENSE NOTICE artifact/

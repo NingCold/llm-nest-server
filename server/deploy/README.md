@@ -24,13 +24,14 @@ docker image inspect llmn-server:v0.1.1-alpha.12
 
 ```sh
 cargo about generate --manifest-path server/Cargo.toml --target x86_64-unknown-linux-gnu --locked --fail --config scripts/licenses/about.toml --output-file /path/to/THIRD-PARTY-NOTICES.txt scripts/licenses/notices.hbs
-python scripts/prepare-cloud-context.py --third-party-notices /path/to/THIRD-PARTY-NOTICES.txt --web-artifact /path/to/web-artifact/llmn-web-0.1.1-alpha.13.tar.gz --web-manifest /path/to/web-artifact/web-manifest.json --web-version 0.1.1-alpha.13 --output /path/to/cloud-context
+WEB_VERSION=0.1.2  # 换成待验 Web 包的确切版本
+python scripts/prepare-cloud-context.py --third-party-notices /path/to/THIRD-PARTY-NOTICES.txt --web-artifact "/path/to/web-artifact/llmn-web-$WEB_VERSION.tar.gz" --web-manifest /path/to/web-artifact/web-manifest.json --web-version "$WEB_VERSION" --output /path/to/cloud-context
 docker build --tag llmn-server:local-reviewed /path/to/cloud-context
 ```
 
 使用 cargo-about 0.9.3 联网取得上游许可原文；发布工作流校验工具的官方 SHA-256。镜像的 `/usr/share/doc/llmn-server/` 包含项目 LICENSE、NOTICE 和 Rust 依赖声明，Web 声明随 Web 文件保留，Debian 运行库的版权文件在 `/usr/share/doc/`。
 
-将示例中的 Web 版本换成实际版本，打包和准备上下文各用一个空目录。脚本核对版本、摘要和归档路径，并要求 Rust 声明及 Web 包根目录的 `LICENSE.txt`、`NOTICE.txt`、`THIRD_PARTY_NOTICES.txt` 均非空。
+确认清单内的 Web 版本正是准备构建的版本；打包和准备上下文各用一个空目录。脚本核对版本、摘要和归档路径，并要求 Rust 声明及 Web 包根目录的 `LICENSE.txt`、`NOTICE.txt`、`THIRD_PARTY_NOTICES.txt` 均非空。
 
 构建上下文保留 Web 清单，只从 `server` 和 `crates/social` 复制受 Git 跟踪的源码，并原样保留 Cargo.toml、Cargo.lock。Docker 构建时按锁文件获取独立的连接器及依赖。将上下文复制到构建机即可构建。部署时把 `CLOUD_SERVER_IMAGE` 设为实际镜像名，并记录服务端、Web 和 Agent 的固定版本与摘要。
 
