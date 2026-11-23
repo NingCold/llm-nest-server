@@ -21,6 +21,58 @@ for (const [name, digest] of Object.entries(manifest.files)) {
 }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
+// The replacement has the account's signing identity, but none of the original device's room keys.
+// The first converted message therefore exists only in the archived backup, the second only in the new one.
+async function checkSplitBackup(c, engine, migration, activate, loseAck) {
+  const { device, signup, bootstrap, http, trust, sdk } = c;
+  const old = await device(await signup('跨代转换者')), author = c.b;
+  await bootstrap(old);
+  const room = await http(old, '/chat/direct', 'POST', { accountId: author.account });
+  await trust(old, author); await trust(author, old);
+  activate(old); await engine.syncCrypto();
+  const original = await engine.createRecoveryFile(); await engine.commitRecoveryFile(original);
+  // A v1 archive contains this exact file metadata and no enrollment seed.
+  const legacy = { format: 'llmn-recovery-v1', server: original.server, accountId: old.account, version: original.version, mediaEncryptionInfo: original.mediaEncryptionInfo };
+  const oldDigest = sha(JSON.stringify(legacy));
+  const messages = [];
+  for (const text of ['跨代之前', '跨代之后']) messages.push(await http(author, `/chat/conversations/${room.id}/messages`, 'POST', { requestId: randomUUID(), text }));
+  const signedPreview = await migration.previewMigration(room.id);
+  await migration.beginMigration(old.account, room, signedPreview, sha(JSON.stringify(messages)), oldDigest, legacy);
+  loseAck();
+  await assert.rejects(migration.convertMigrationPage(old.account, room), /lost acknowledgement/);
+  const half = await migration.confirmMigrationResult(old.account, room.id);
+  assert.equal(half.status.remaining, 1);
+  const pre = (await migration.migrationItems(half.status.id, '0', true)).items.find(i => i.converted);
+  const archivedReader = await engine.recoveryReader(legacy);
+  try { await archivedReader.unseal(pre.record.sealed); } finally { archivedReader.close(); }
+
+  const next = await device(old);
+  const identity = (await old.machine.exportSecretsBundle()).to_json();
+  delete identity.backup;
+  await next.machine.importSecretsBundle(sdk.SecretsBundle.from_json(identity));
+  await engine.trustDevice(old.account, next.device, next.machine.identityKeys.ed25519.toBase64(), next.machine.identityKeys.curve25519.toBase64(), old.master);
+  await c.query(next, [old.account, author.account]);
+  activate(next); await engine.syncCrypto();
+  await engine.revokeCryptoDevice(old.account, old.device);
+  old.machine.close();
+  const current = await engine.createRecoveryFile(); await engine.commitRecoveryFile(current);
+  const currentDigest = sha(JSON.stringify(current));
+  const ready = await migration.convertMigrationPage(next.account, room);
+  assert.equal(ready.status.remaining, 0);
+  const post = (await migration.migrationItems(ready.status.id, '0', true)).items.find(i => i.id !== pre.id);
+  const oldOnly = await engine.recoveryReader(legacy), newOnly = await engine.recoveryReader(current);
+  try {
+    await oldOnly.unseal(pre.record.sealed); await assert.rejects(oldOnly.unseal(post.record.sealed));
+    await newOnly.unseal(post.record.sealed); await assert.rejects(newOnly.unseal(pre.record.sealed));
+  } finally { oldOnly.close(); newOnly.close(); }
+  await assert.rejects(migration.verifyAndFinishMigration(next.account, room, legacy, oldDigest));
+  assert.equal((await migration.refreshMigration(next.account, room.id)).status.state, 'active');
+  await migration.verifyAndFinishMigration(next.account, room, legacy, oldDigest, { file: current, digest: currentDigest });
+  assert.equal((await migration.refreshMigration(next.account, room.id)).status.state, 'complete');
+  engine.lockCrypto();
+  return { oldFileOnlyReadsFirst: true, newFileOnlyReadsSecond: true, verifiedWithBoth: true };
+}
+
 exports.run = async c => {
   const { sdk, signup, device, bootstrap, trust, http, sql, origin, setRequireEncryption } = c;
   assert.equal(typeof setRequireEncryption, 'function', 'fixture must provide isolated strict-mode restart');
@@ -52,13 +104,13 @@ exports.run = async c => {
   const snapshotBytes = Buffer.from(JSON.stringify({ conversation, messages: snapshotPage.messages, intents: snapshotIntents, attachments: snapshotAttachments }));
   fs.writeFileSync(path.join(c.directory, `history-snapshot-${conversation.id}.private.json`), snapshotBytes, { mode: 0o600 });
   const storage = new Map(), modules = new Map(), uploads = [];
-  let loseFirstUpload = true;
+  let loseFirstUpload = true, apiSession = a;
   class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
   class ConnectionError extends Error {}
   const api = {
     server: origin, HttpError, ConnectionError,
     request: async (route, method = 'GET', body) => {
-      const r = await fetch(origin + '/api' + route, { method, headers: { Cookie: a.cookie, Origin: origin, 'X-LLMN-Client': '1', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const r = await fetch(origin + '/api' + route, { method, headers: { Cookie: apiSession.cookie, Origin: origin, 'X-LLMN-Client': '1', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await r.text();
       if (!r.ok) throw new HttpError(r.status, JSON.parse(text).message || text);
       const result = text ? JSON.parse(text) : null;
@@ -69,7 +121,7 @@ exports.run = async c => {
       return result;
     },
     downloadBytes: async route => {
-      const r = await fetch(origin + '/api' + route, { headers: { Cookie: a.cookie, Origin: origin, 'X-LLMN-Client': '1' } });
+      const r = await fetch(origin + '/api' + route, { headers: { Cookie: apiSession.cookie, Origin: origin, 'X-LLMN-Client': '1' } });
       assert.equal(r.status, 200); return new Uint8Array(await r.arrayBuffer());
     },
   };
@@ -99,7 +151,8 @@ exports.run = async c => {
   const migration = load(path.join(fixture, 'crypto/migration.cjs'));
   const content = load(path.join(fixture, 'crypto/content.cjs'));
   const attachments = load(path.join(fixture, 'crypto/attachments.cjs'));
-  engine.seed({ ...a, sdk });
+  const activate = session => { apiSession = session; engine.seed({ ...session, sdk }); };
+  activate(a);
   try {
     await engine.syncCrypto();
     const file = await engine.createRecoveryFile(); await engine.commitRecoveryFile(file);
@@ -185,6 +238,9 @@ exports.run = async c => {
       fs.writeFileSync(path.join(c.directory, 'ui-login.private.json'), JSON.stringify({ origin, email: a.email, password: a.password, accountId: a.account, conversationId: conversation.id }), { mode: 0o600 });
       fs.writeFileSync(path.join(c.directory, 'ui-recovery.private.json'), JSON.stringify(file), { mode: 0o600 });
     }
-    console.log('PASS: real frontend/WASM history conversion preserves different original authors, revisions/read state/replies, image/file bytes and terminal contact; lost upload retries exactly; fresh recovery decrypts entire manifest before finish; archive and strict encryption remain enforced; correctly signed altered content cannot finish.');
+    const rotation = await checkSplitBackup(c, engine, migration, activate, () => { loseFirstUpload = true; });
+    activate(a);
+    console.log('PASS: real frontend/WASM history conversion preserves different original authors, revisions/read state/replies, image/file bytes and terminal contact; lost upload retries exactly; fresh recovery decrypts entire manifest before finish; rotation across devices can finish using separate archived and current recovery files.');
+    return rotation;
   } finally { engine.lockCrypto(); b.machine.close(); }
 };

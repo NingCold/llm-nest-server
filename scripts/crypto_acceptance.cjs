@@ -588,10 +588,10 @@ async function main() {
   const directorySync = await verifyDirectorySync(a, b);
   if (process.argv.includes('--migration-only')) {
     phase = 'history conversion and independent SDK recovery';
-    await require('./crypto_migration_acceptance.cjs').run({ a, b, http, sdk, signup, device, bootstrap, trust, sync, decrypt, sql, roomId, userId, origin, sign, outgoing, query, setRequireEncryption, directory, serveUI: process.argv.includes('--serve-ui') });
+    const migrationAcrossGenerations = await require('./crypto_migration_acceptance.cjs').run({ a, b, http, sdk, signup, device, bootstrap, trust, sync, decrypt, sql, roomId, userId, origin, sign, outgoing, query, setRequireEncryption, directory, serveUI: process.argv.includes('--serve-ui') });
     const modelCalls = await agentFlow(a, b);
     for (const s of [a, b]) s.machine.close();
-    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: 'migration', modelCalls, directorySync, database, date: new Date().toISOString() }));
+    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ passed: true, mode: 'migration', modelCalls, directorySync, migrationAcrossGenerations, database, date: new Date().toISOString() }));
     console.log('PASS: encrypted history conversion, independent recovery, node material migration and strict deployment policy.');
     if (process.argv.includes('--serve-ui')) {
       console.log(`Isolated UI fixture retained at ${directory}; create its stop file when finished.`);

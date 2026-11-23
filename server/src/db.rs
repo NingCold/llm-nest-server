@@ -108,6 +108,13 @@ pub fn migrator() -> sqlx_core::migrate::Migrator {
                 include_str!("../migrations/0014_device_authority.sql").into(),
                 false,
             ),
+            Migration::new(
+                15,
+                "verified history recovery files".into(),
+                MigrationType::Simple,
+                include_str!("../migrations/0015_history_recovery_set.sql").into(),
+                false,
+            ),
         ]
         .into(),
         ..Migrator::DEFAULT

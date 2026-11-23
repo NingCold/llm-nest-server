@@ -2787,6 +2787,159 @@ async fn history_commit_receipts_survive_device_recovery_and_recheck_current_aut
     f.close().await;
 }
 #[tokio::test]
+async fn history_upgrade_preserves_old_receipts_and_fences_late_unsigned_controls() {
+    let Some(f) = Fixture::new_through(14).await else {
+        return;
+    };
+    let api = Api::new(&f).await;
+    let (actor, headers) = &f.users[0];
+    let cid = conversation(&f, *actor, f.users[1].0).await;
+    let pending_cid = conversation(&f, *actor, f.users[2].0).await;
+    let device = registered(&api, headers, *actor).await;
+    let original = json!({"requestId":Uuid::new_v4(),"deviceId":device,"conversationId":cid,"expectedConversationRevision":"1","sourceDigest":"a".repeat(64),"backupDigest":"b".repeat(64),"recoveryDigest":"c".repeat(64),"localPendingResolved":true});
+    let id = Uuid::new_v4();
+    let insert_old = "INSERT INTO cloud_history_migrations(id,conversation,actor_id,conversation_revision,source_digest,backup_digest,recovery_digest) VALUES($1,$2,$3,1,$4,$5,$6)";
+    let mut tx = f.state.pool.begin().await.unwrap();
+    sqlx::query(insert_old)
+        .bind(id)
+        .bind(cid)
+        .bind(actor)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind("c".repeat(64))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cloud_conversations SET history_migration=$2 WHERE id=$1")
+        .bind(cid)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let fingerprint = format!(
+        "{:x}",
+        Sha256::digest(json!(["begin", original]).to_string().as_bytes())
+    );
+    let request_id = Uuid::parse_str(original["requestId"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO cloud_history_receipts(actor_id,request_id,fingerprint,migration_id) VALUES($1,$2,$3,$4)").bind(actor).bind(request_id).bind(&fingerprint).bind(id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    crate::db::migrator().run(&f.state.pool).await.unwrap();
+    let receipt_path =
+        |req, room| format!("/crypto/history-migration-receipts/{req}?legacyConversationId={room}");
+    let committed = api
+        .ok(
+            headers,
+            Method::GET,
+            &receipt_path(request_id, cid),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(committed["receipt"]["fingerprint"], fingerprint);
+    assert_eq!(committed["receipt"]["migration"]["id"], id.to_string());
+    for room in [cid, pending_cid] {
+        let absent = api
+            .ok(
+                headers,
+                Method::GET,
+                &receipt_path(Uuid::new_v4(), room),
+                Value::Null,
+            )
+            .await;
+        assert_eq!(
+            absent,
+            json!({"receipt":null,"unsignedControlFence":"device-proof-v1"})
+        );
+    }
+    let mut late = f.state.pool.begin().await.unwrap();
+    crate::nodes::lock(&mut late).await.unwrap();
+    let error = sqlx::query(insert_old)
+        .bind(Uuid::new_v4())
+        .bind(pending_cid)
+        .bind(actor)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind("c".repeat(64))
+        .execute(&mut *late)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("42501")
+    );
+    late.rollback().await.unwrap();
+    let mut late = f.state.pool.begin().await.unwrap();
+    crate::nodes::lock(&mut late).await.unwrap();
+    let error = sqlx::query("UPDATE cloud_history_migrations SET state='complete' WHERE id=$1")
+        .bind(id)
+        .execute(&mut *late)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("42501")
+    );
+    late.rollback().await.unwrap();
+
+    let finish_path = format!("/crypto/history-migrations/{id}/finish");
+    let mut finish = json!({"requestId":Uuid::new_v4(),"deviceId":device,"verificationDigest":"d".repeat(64),"recoveryDigests":["c".repeat(64)]});
+    assert_ne!(
+        api.call(headers, Method::POST, &finish_path, finish.clone())
+            .await
+            .0,
+        200
+    );
+    let action = format!("history.finish:{id}");
+    finish["recoveryDigests"] = json!(["e".repeat(64)]);
+    assert_eq!(
+        api.call(
+            headers,
+            Method::POST,
+            &finish_path,
+            api.command(*actor, &action, finish.clone())
+        )
+        .await
+        .0,
+        400
+    );
+    finish["recoveryDigests"] = json!(["c".repeat(64)]);
+    let done = api
+        .ok(
+            headers,
+            Method::POST,
+            &finish_path,
+            api.command(*actor, &action, finish),
+        )
+        .await;
+    assert_eq!(done["state"], "complete");
+    assert_eq!(done["verificationRecoveryDigests"], json!(["c".repeat(64)]));
+    let preview = api
+        .ok(
+            headers,
+            Method::POST,
+            "/crypto/history-migrations/preview",
+            json!({"conversationId":pending_cid}),
+        )
+        .await;
+    let mut fresh = original;
+    fresh["requestId"] = json!(Uuid::new_v4());
+    fresh["conversationId"] = json!(pending_cid);
+    fresh["expectedConversationRevision"] = preview["conversationRevision"].clone();
+    fresh["sourceDigest"] = preview["sourceDigest"].clone();
+    let started = api
+        .ok(
+            headers,
+            Method::POST,
+            "/crypto/history-migrations",
+            api.command(*actor, "history.begin", fresh),
+        )
+        .await;
+    assert_eq!(started["state"], "active");
+    drop(api);
+    f.close().await;
+}
+
+#[tokio::test]
 async fn legacy_upgrade_preserves_archives_and_requires_independent_one_time_admission() {
     let Some(f) = Fixture::new().await else {
         return;

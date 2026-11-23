@@ -1173,6 +1173,9 @@ pub(crate) mod tests {
     }
     impl Fixture {
         pub(crate) async fn new() -> Option<Self> {
+            Self::new_through(i64::MAX).await
+        }
+        pub(crate) async fn new_through(last_migration: i64) -> Option<Self> {
             let url = std::env::var("CLOUD_TEST_DATABASE_URL").ok()?;
             let admin = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(2)
@@ -1197,7 +1200,12 @@ pub(crate) mod tests {
                 .connect(&url)
                 .await
                 .unwrap();
-            sqlx::migrator().run(&pool).await.unwrap();
+            let mut migrations = sqlx::migrator();
+            migrations
+                .migrations
+                .to_mut()
+                .retain(|migration| migration.version <= last_migration);
+            migrations.run(&pool).await.unwrap();
             let dir = tempfile::tempdir().unwrap();
             let state = Arc::new(AppState {
                 require_encryption: false,

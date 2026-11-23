@@ -45,10 +45,16 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         )
         .route("/crypto/history-migrations/{id}/finish", post(finish))
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptQuery {
+    legacy_conversation_id: Option<Uuid>,
+}
 async fn read_receipt(
     State(s): State<Arc<AppState>>,
     h: HeaderMap,
     Path(request): Path<Uuid>,
+    Query(query): Query<ReceiptQuery>,
 ) -> Result<Json<Value>> {
     let p = auth::authenticate(&s, &h).await?;
     let mut tx = s.pool.begin().await?;
@@ -56,7 +62,14 @@ async fn read_receipt(
     let row = sqlx::query("SELECT r.fingerprint,h.* FROM cloud_history_receipts r JOIN cloud_history_migrations h ON h.id=r.migration_id WHERE r.actor_id=$1 AND r.request_id=$2")
         .bind(p.id).bind(request).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
-        // Absence is not evidence that an earlier unknown submission never committed.
+        if let Some(cid) = query.legacy_conversation_id {
+            // Only unsigned control writes are fenced by this server version. Ordinary missing
+            // receipts, including signed controls, remain unknown and must retain their commands.
+            authority(&mut tx, cid, p.id).await?;
+            return Ok(Json(
+                json!({"receipt":null,"unsignedControlFence":"device-proof-v1"}),
+            ));
+        }
         return Ok(Json(json!({"receipt":null})));
     };
     if let Err(error) = authority(&mut tx, row.get("conversation"), p.id).await {
@@ -245,7 +258,7 @@ async fn status_value(tx: &mut Tx<'_>, r: &sqlx::postgres::PgRow) -> Result<Valu
         stored.as_str()
     };
     Ok(
-        json!({"id":r.get::<Uuid,_>("id"),"conversationId":r.get::<Uuid,_>("conversation"),"conversationRevision":r.get::<i64,_>("conversation_revision").to_string(),"sourceDigest":r.get::<String,_>("source_digest"),"state":state,"currentConversationRevision":current.to_string(),"remaining":remaining,"backupDigest":r.get::<String,_>("backup_digest"),"recoveryDigest":r.get::<String,_>("recovery_digest"),"verificationDigest":r.get::<Option<String>,_>("verification_digest")}),
+        json!({"id":r.get::<Uuid,_>("id"),"conversationId":r.get::<Uuid,_>("conversation"),"conversationRevision":r.get::<i64,_>("conversation_revision").to_string(),"sourceDigest":r.get::<String,_>("source_digest"),"state":state,"currentConversationRevision":current.to_string(),"remaining":remaining,"backupDigest":r.get::<String,_>("backup_digest"),"recoveryDigest":r.get::<String,_>("recovery_digest"),"verificationDigest":r.get::<Option<String>,_>("verification_digest"),"verificationRecoveryDigests":r.get::<Option<Vec<String>>,_>("verification_recovery_digests")}),
     )
 }
 async fn receipt(tx: &mut Tx<'_>, a: Uuid, v: &Value, operation: &str) -> Result<Option<Uuid>> {
@@ -324,6 +337,10 @@ async fn begin(
         return Ok(Json(status_value(&mut tx, &r).await?));
     }
     crypto::device_command(&mut tx, &a, "history.begin", &v).await?;
+    sqlx::query("SELECT set_config('llmn.history_control',$1,true)")
+        .bind(format!("begin:{cid}"))
+        .execute(&mut *tx)
+        .await?;
     if field(&v, "expectedConversationRevision")? != rev.to_string()
         || v["localPendingResolved"] != true
     {
@@ -569,16 +586,48 @@ async fn finish(
         return Ok(Json(status_value(&mut tx, &r).await?));
     }
     crypto::device_command(&mut tx, &a, &format!("history.finish:{id}"), &v).await?;
+    sqlx::query("SELECT set_config('llmn.history_control',$1,true)")
+        .bind(format!("finish:{id}"))
+        .execute(&mut *tx)
+        .await?;
     if r.get::<String, _>("state") != "active" {
         return Err(AppError::conflict("转换已关闭"));
     }
     let cid: Uuid = r.get("conversation");
     let verification = hash(&v, "verificationDigest")?;
+    let original: String = r.get("recovery_digest");
+    let digests = match v.get("recoveryDigests") {
+        None => vec![original.clone()], // Previously frozen signed single-file command.
+        Some(value) => serde_json::from_value::<Vec<String>>(value.clone())
+            .map_err(|_| AppError::bad("恢复文件摘要集合无效"))?,
+    };
+    if !(1..=2).contains(&digests.len())
+        || digests[0] != original
+        || digests
+            .iter()
+            .any(|d| d.len() != 64 || !d.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(AppError::bad("验读必须包含开始时核对的恢复文件"));
+    }
+    if digests.len() == 2 {
+        if digests[0] == digests[1] {
+            return Err(AppError::bad("补充恢复文件必须来自不同备份代"));
+        }
+        let version = field(&v, "supplementalRecoveryVersion")?;
+        let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM cloud_crypto_recovery WHERE account_id=$1 AND version=$2 AND enrollment_key IS NOT NULL) AND EXISTS(SELECT FROM cloud_crypto_backups WHERE account_id=$1 AND NOT sealed)").bind(a.id).bind(version).fetch_one(&mut *tx).await?;
+        if !current {
+            return Err(AppError::conflict(
+                "补充恢复文件已不再是当前版本，请重新验读",
+            ));
+        }
+    } else if v.get("supplementalRecoveryVersion").is_some() {
+        return Err(AppError::bad("缺少补充恢复文件摘要"));
+    }
     let left:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cloud_history_items WHERE migration_id=$1 AND NOT converted) OR EXISTS(SELECT 1 FROM cloud_messages WHERE conversation=$2 AND NOT withdrawn AND (sealed IS NULL OR body<>'')) OR EXISTS(SELECT 1 FROM cloud_contact_intents WHERE conversation=$2 AND (sealed IS NULL OR content<>''))").bind(id).bind(cid).fetch_one(&mut *tx).await?;
     if left {
         return Err(AppError::conflict("转换清单尚未完成"));
     }
-    sqlx::query("UPDATE cloud_history_migrations SET state='complete',verification_digest=$2,completed_at=now() WHERE id=$1").bind(id).bind(verification).execute(&mut *tx).await?;
+    sqlx::query("UPDATE cloud_history_migrations SET state='complete',verification_digest=$2,verification_recovery_digests=$3,completed_at=now() WHERE id=$1").bind(id).bind(verification).bind(&digests).execute(&mut *tx).await?;
     sqlx::query("UPDATE cloud_conversations SET crypto_enabled=true,crypto_history_complete=true,crypto_from_position=0 WHERE id=$1").bind(cid).execute(&mut *tx).await?;
     save_receipt(&mut tx, a.id, &v, &operation, id).await?;
     let members = chat::member(&mut tx, cid, a.id).await?;
