@@ -24,6 +24,11 @@ class WebFixture:
         archive = output / 'fixture.tar.gz'
         with tarfile.open(archive, 'w:gz') as tar:
             tar.add(dist / 'index.html', arcname='index.html')
+            for name in ('LICENSE.txt', 'NOTICE.txt', 'THIRD_PARTY_NOTICES.txt'):
+                entry = tarfile.TarInfo(name)
+                body = f'Fixture Web {name}'.encode()
+                entry.size = len(body)
+                tar.addfile(entry, io.BytesIO(body))
         (output / 'web-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'webVersion': version, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}))
         return archive
 web = WebFixture()
@@ -47,6 +52,31 @@ class ArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'unsafe path'):
                     cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
                 self.assertFalse((root / 'out').exists())
+
+    def test_missing_or_empty_distribution_notices_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            notices = root / 'notices.txt'
+            notices.write_text('Rust dependency license text')
+            for missing in cloud.WEB_NOTICES:
+                for empty in (False, True):
+                    artifact = root / 'web.tar.gz'
+                    with tarfile.open(artifact, 'w:gz') as tar:
+                        for name in ('index.html', *cloud.WEB_NOTICES):
+                            if name == missing and not empty:
+                                continue
+                            body = b' ' if name == missing else b'fixture'
+                            entry = tarfile.TarInfo(name)
+                            entry.size = len(body)
+                            tar.addfile(entry, io.BytesIO(body))
+                    manifest = root / 'manifest.json'
+                    manifest.write_text(json.dumps({'schemaVersion': 1, 'webVersion': '1.2.3', 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}))
+                    with self.assertRaisesRegex(ValueError, 'missing or empty notice'):
+                        cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
+                    self.assertFalse((root / 'out').exists())
+            notices.write_text('  ')
+            with self.assertRaisesRegex(ValueError, 'Rust third-party notices are empty'):
+                cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
 
     def test_context_lock_resolution_keeps_existing_dependency_versions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -96,6 +126,8 @@ class ArtifactTests(unittest.TestCase):
                 cloud.create(root / 'bad', artifact, manifest, '2.0.0', notices, lock=False)
             context = cloud.create(root / 'context', artifact, manifest, '1.2.3', notices, lock=False)
             self.assertTrue((context / 'web/index.html').is_file())
+            for name in cloud.WEB_NOTICES:
+                self.assertEqual((context / 'web' / name).read_text(), f'Fixture Web {name}')
             self.assertEqual((context / 'LICENSE').read_bytes(), (cloud.ROOT / 'LICENSE').read_bytes())
             self.assertEqual((context / 'NOTICE').read_bytes(), (cloud.ROOT / 'NOTICE').read_bytes())
             self.assertEqual((context / 'THIRD-PARTY-NOTICES.txt').read_bytes(), notices.read_bytes())

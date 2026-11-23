@@ -20,4 +20,4 @@
 
 [开发](docs/development.md) · [设计](docs/design/README.md) · [共用数据类型](crates/social/README.md) · [迁移](docs/migration.md)
 
-代码采用 [Apache-2.0](LICENSE)，第三方组件保留各自许可证和声明。
+本仓自有代码采用 [Apache-2.0](LICENSE)，版权声明见 [NOTICE](NOTICE)。第三方组件保留各自的许可证与署名。

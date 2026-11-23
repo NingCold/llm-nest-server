@@ -10,6 +10,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMBERS = ('server', 'connector', 'crates/social')
+WEB_NOTICES = ('LICENSE.txt', 'NOTICE.txt', 'THIRD_PARTY_NOTICES.txt')
 
 
 def toml_value(value):
@@ -21,6 +22,8 @@ def toml_value(value):
 
 
 def create(output, web, manifest_path, version, notices, root=ROOT, lock=True):
+    if not notices.read_text(encoding='utf-8').strip():
+        raise ValueError('Rust third-party notices are empty')
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     if not version or version == 'latest' or manifest.get('schemaVersion') != 1 or manifest.get('webVersion') != version:
         raise ValueError('Web artifact version mismatch')
@@ -32,6 +35,10 @@ def create(output, web, manifest_path, version, notices, root=ROOT, lock=True):
             raise ValueError('Web archive contains an unsafe path or link')
         if not any(e.name == 'index.html' and e.isfile() for e in entries):
             raise ValueError('Web archive has no index.html')
+        for name in WEB_NOTICES:
+            entry = next((e for e in entries if e.name == name and e.isfile()), None)
+            if entry is None or not tar.extractfile(entry).read().strip():
+                raise ValueError(f'Web artifact has missing or empty notice: {name}')
         if output.exists() and any(output.iterdir()):
             raise ValueError('Build context must be empty')
         output.mkdir(parents=True, exist_ok=True)

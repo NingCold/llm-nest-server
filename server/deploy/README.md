@@ -28,9 +28,11 @@ python scripts/prepare-cloud-context.py --third-party-notices /path/to/THIRD-PAR
 docker build --tag llmn-server:local-reviewed /path/to/cloud-context
 ```
 
-使用 cargo-about 0.9.3 生成 Rust 依赖声明；发布工作流从官方固定版本下载并核验 SHA-256，不现场编译此工具。生成过程允许联网取得上游准确许可证文本，不能改用离线标准文本代替。镜像在 `/usr/share/doc/llmn-server/` 随附根 LICENSE、NOTICE 与 `THIRD-PARTY-NOTICES.txt`；Web 自带的许可证声明保留在 Web 产物中，Debian 运行库的 copyright 文件仍在 `/usr/share/doc/`。
+使用 cargo-about 0.9.3 联网取得上游许可原文；发布工作流校验工具的官方 SHA-256。镜像的 `/usr/share/doc/llmn-server/` 包含项目 LICENSE、NOTICE 和 Rust 依赖声明，Web 声明随 Web 文件保留，Debian 运行库的版权文件在 `/usr/share/doc/`。
 
-版本参数选择实际构建的客户端版本。打包目录与构建上下文必须为空，不会覆盖旧包。上下文创建时验证版本、摘要和归档路径，只加入 `server`、`connector`、`crates/social` 的受 Git 跟踪文件，并用 `cargo update --workspace --offline` 从现有锁文件收敛最小工作区，核对依赖版本保持固定；需要本机已有对应 Cargo 索引缓存。可以将生成的上下文复制到构建机器后再构建；在私有部署环境设置 `CLOUD_SERVER_IMAGE=llmn-server:local-reviewed`，与实际构建的镜像名保持一致。上下文包含固定 Web 清单，不含个人配置、模型密钥或聊天库。服务端、Web 和 Agent 的版本可以独立选择；部署时保留实际兼容组合及摘要，不用 `latest` 代替产物版本。
+将示例中的 Web 版本换成实际版本，打包和准备上下文各用一个空目录。脚本核对版本、摘要和归档路径，并要求 Rust 声明及 Web 包根目录的 `LICENSE.txt`、`NOTICE.txt`、`THIRD_PARTY_NOTICES.txt` 均非空。
+
+构建上下文保留 Web 清单，只从 `server`、`connector`、`crates/social` 复制受 Git 跟踪的源码。脚本用本机 Cargo 索引缓存离线整理锁文件，保持依赖版本不变。将上下文复制到构建机即可构建。部署时把 `CLOUD_SERVER_IMAGE` 设为实际镜像名，并记录服务端、Web 和 Agent 的固定版本与摘要。
 
 ## 准备目录与证书
 
