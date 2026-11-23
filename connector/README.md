@@ -4,14 +4,14 @@
 
 ## 只接入已有服务器
 
-在自己的 Rust 项目的 `Cargo.toml` 中添加依赖即可，无需把 Agent 放进服务端仓库：
+在自己的 Rust 项目的 `Cargo.toml` 中添加依赖：
 
 ```toml
 [dependencies]
 connector = { git = "https://github.com/NingCold/llm-nest-server.git", rev = "f47f9b4a99ba8602b7992b53d22bacf08534a64c" }
 ```
 
-这里固定到现有 Agent 使用的同一公开提交。Cargo 会获取这个 Git 仓库，但只构建 connector 及其依赖，不编译服务端；接入已有服务器不需要在本机准备服务端数据库、容器或部署环境。节点凭据与配对方式见下文。
+示例固定到 Agent 使用的公开协议提交。升级时核对目标服务的协议组合，并提交 Cargo.lock。Cargo 只构建 connector 及其依赖；接入已有服务器无需本机数据库或容器。
 
 非 Rust Agent 可以按 [HTTP/WSS 协议](../docs/design/api.md#云端-ai-与节点接口)直接实现接入；目前项目没有提供 Python 或 TypeScript SDK。
 
@@ -23,7 +23,7 @@ connector = { git = "https://github.com/NingCold/llm-nest-server.git", rev = "f4
 
 先生成一个节点 UUID 和 32 字节随机 secret（64 位小写十六进制），在本机安全保存。使用同一个 secret 调用 `pair`，真人在“我的账号 → 我管理的 AI”输入配对码授权，再查询 `pairing_status` 得到 AI 和绑定版本。每个 AI 使用自己的凭据。
 
-## 独立示例
+## 配对与演示
 
 `crypto` 定义密文封装、设备、公钥投递、备份恢复和 AI 资料 CAS；`NodeClient` 提供传输方法，包本身不实现密码学。真实加密接入还需通过 Matrix SDK 建立账号与设备身份、核验可信设备，并准备密钥备份与恢复，完成后才声明 `sealedV1`。消息保留设备与账号 master 双签，同机与云端使用相同封装；同机 Olm 密钥投递使用相同设备身份和信任规则。详见[加密契约](../docs/design/crypto-contract.md)。
 
@@ -52,5 +52,7 @@ cargo run -p connector --example external_node -- run
 自带节点的自动 token 账本按 AI、窗口和 UTC 日区分，显式消息仍受整体节点预算约束。外部 Agent 自行管理模型并发与预算；无法执行时使用 `RejectRequest` 返回明确原因，例如 `token_limit`。已开始或网络结果不明确的调用不退还预算，不自动重调模型。
 
 `Hello.capabilities` 可省略，外部示例发送空能力；自带节点声明 `profileManagement`。`ManagementRequest` / `ManagementResponse` 使用 relayId 匹配连接、requestId 去重，`AgentManagementOperation` 支持 view/saveProfile。远程 DTO 不含地址和凭据；不支持管理的外部节点应明确返回 management_unsupported。示例在等待与固定回答待提交期间处理取消、连接结束与撤权，不调用模型、不自动重试已开始任务；最终提交仍由云端校验当前权限。
+
+## 验证连接器
 
 固定回答待提交期间的取消、撤权及不支持管理响应，可用独立回环 WebSocket 验收，不连接云端或模型：`cargo test -p connector --example external_node --locked`。测试使用临时监听端口，向实际连接发送管理、Cancel 和撤权 Error 帧。

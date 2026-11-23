@@ -6,7 +6,7 @@
 
 ## 本机启动
 
-先准备独立 PostgreSQL 数据库和已核验的 Web 静态产物，再设置下表变量：
+先准备独立 PostgreSQL 数据库和已核验的 Web 静态产物，设置下表的数据库、公开来源、附件与邮件配置，再启动：
 
 ```bash
 export CLOUD_WEB_DIR=/absolute/path/to/verified-web
@@ -22,6 +22,7 @@ cargo run -p cloud-server --locked
 | `CLOUD_ATTACHMENTS_DIR` | 附件持久目录，与静态网页和测试收件箱分开 |
 | `CLOUD_WEB_DIR` | 静态目录，默认 `web` |
 | `CLOUD_BIND` | 监听地址，默认 `127.0.0.1:8787` |
+| `CLOUD_REQUIRE_ENCRYPTION` | 拒绝明文写入，默认 `false`；启用前完成存量转换与恢复核对 |
 | `CLOUD_SMTP_HOST`、`CLOUD_SMTP_FROM` | 邮件发送配置；可配 `CLOUD_SMTP_PORT`、`CLOUD_SMTP_USERNAME`、`CLOUD_SMTP_PASSWORD` |
 | `CLOUD_MAIL_OUTBOX` | 绝对路径的私有测试收件箱；设置后使用文件邮件，不发送 SMTP |
 

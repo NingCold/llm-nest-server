@@ -18,8 +18,8 @@
 | LLMN_CLIENT_VERSION | 客户端测试产物的确切版本，匹配 manifest.json |
 | LLMN_CLIENT_CRYPTO_FIXTURE | 客户端生成的预编译 crypto 测试产物目录 |
 
-测试依赖由 tests/integration/package-lock.json 固定，使用官方 Matrix SDK。客户端通过 `node scripts/package-crypto-fixture.cjs OUTPUT` 打包测试模块，服务端检查 manifest.json 中的客户端版本和逐文件 SHA-256；服务端不读取 TypeScript 源码、不重复客户端迁移实现。版本、提交及 SHA-256 记录在实际联调清单中。此类模拟模型检查不代表日常安装、Linux 实机、真实客户端重启或独立安全审查通过。
+测试依赖由 tests/integration/package-lock.json 固定，使用官方 Matrix SDK。客户端通过 `node scripts/package-crypto-fixture.cjs OUTPUT` 打包测试模块，服务端检查 manifest.json 中的客户端版本和逐文件 SHA-256；服务端不读取 TypeScript 源码、不重复客户端迁移实现。版本、提交及 SHA-256 记录在实际联调清单中。
 
 ## 验证结果如何使用
 
-本页说明复验方法；[历史记录](validation-records.md)保留已执行批次的证据。公开镜像的固定组合见[兼容清单](../server/deploy/compatibility.json)，当前内网试用与尚待完成的受邀者自助验证见[产品当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。模拟模型联调、服务器健康检查和产物核验分别证明各自范围，不能替代受邀者完整使用流程。
+本页说明复验方法；[历史记录](validation-records.md)保留已执行批次的证据。公开镜像的固定组合见[兼容清单](../server/deploy/compatibility.json)，当前内网试用与尚待完成的受邀者自助验证见[产品当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。本页联调使用隔离库和模拟模型；日常安装、Linux 实机、真实客户端重启、受邀者完整使用流程及独立安全审查分别验收。站点复验与备份见[部署指南](../server/deploy/README.md#复验与备份)。

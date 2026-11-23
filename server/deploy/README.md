@@ -75,17 +75,15 @@ docker compose --env-file /srv/llmn-test/private/cloud.env -f /srv/llmn-test/dep
 
 第一个命令返回邀请码，交给受邀人使用，也可以组成站点的 `/#/register?invite=邀请码` 链接。邮件写入 `data/outbox` 下的 JSON 文件，包含收件人和验证或重置链接。维护者在服务器上读取对应邮件，不把整个目录公开到网站。
 
-首版内网测试站使用 outbox，由维护者转交对应验证链接；SMTP 是后续单独配置和验证的邮件投递方式，不是本次试用的前提。
-
 后续切换 SMTP 时，在私有部署目录的 `compose.yaml` 中删除 app 的 `CLOUD_MAIL_OUTBOX` 环境项，不要只改为空字符串；只要该变量存在，服务就选择文件邮件。将 `CLOUD_SMTP_HOST`、`CLOUD_SMTP_FROM` 及所需的 `CLOUD_SMTP_PORT`、`CLOUD_SMTP_USERNAME`、`CLOUD_SMTP_PASSWORD` 显式加入 app 的 environment，通过私有 `cloud.env` 引用它们。设置用户名时必须同时提供密码；仅填写 `cloud.env` 不会自动把新变量传入容器。真实值只保存在权限为 `600` 的私有配置中，不写入仓库、命令行或日志。
 
-修改后用前文的 Compose 启动命令重新创建 app，并以专用账号实际验证注册邮件与密码重置邮件送达。outbox 测试通过不能代替 SMTP 投递验证。变量用途见[服务配置](../README.md)。
+用前文的 Compose 启动命令重新创建 app，以专用账号确认能收到注册验证和重置密码两种邮件。变量用途见[服务配置](../README.md)。
 
 桌面测试连接可在启动进程时设置 `CLOUD_CA_CERT_FILE=/绝对路径/ca.crt`，无需关闭证书校验。网页使用浏览器自己的证书信任设置。客户端里填写与证书一致的 HTTPS 地址。
 
 ## 复验与备份
 
-`scripts/cloud_acceptance.py` 会创建三个独立测试账号，检查邀请与验证、附件、重复发送、第三账号隔离，并通过另一台 SSH 设备登录和回复，最后重启应用容器确认数据保留。它不会调用模型或读取日常聊天；输出文件包含测试登录资料，放在忽略目录中。
+`scripts/cloud_acceptance.py` 适用于使用测试收件箱且允许明文的隔离站点。脚本创建三个测试账号，从两台设备检查邀请、验证、消息、附件、重复发送和权限隔离，最后重启应用容器核对数据。输出文件含测试登录资料，请存入忽略目录。已启用强制加密的站点按下节核对加密聊天，保留原加密设置。
 
 ```bash
 python scripts/cloud_acceptance.py \
