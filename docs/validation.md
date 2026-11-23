@@ -22,4 +22,4 @@
 
 ## 验证结果如何使用
 
-本页说明复验方法；[历史记录](validation-records.md)保留已执行批次的证据。公开镜像的固定组合见[兼容清单](../server/deploy/compatibility.json)，当前内网试用与尚待完成的受邀者自助验证见[产品当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。本页联调使用隔离库和模拟模型；日常安装、Linux 实机、真实客户端重启、受邀者完整使用流程及独立安全审查分别验收。站点复验与备份见[部署指南](../server/deploy/README.md#复验与备份)。
+本页说明复验方法；[历史记录](validation-records.md)保留已执行批次的证据。0.1.2 公开镜像及其验证范围见[兼容清单](../server/deploy/releases/0.1.2.json)，当前内网试用与尚待完成的受邀者自助验证见[产品当前安排](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md)。本页联调使用隔离库和模拟模型；日常安装、Linux 实机、真实客户端重启、受邀者完整使用流程及独立安全审查分别验收。站点复验与备份见[部署指南](../server/deploy/README.md#复验与备份)。

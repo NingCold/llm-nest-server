@@ -8,7 +8,7 @@
 2. 启动服务，检查 HTTPS 入口，按[邀请与测试邮件](server/deploy/README.md#邀请与测试邮件)发出第一份邀请。
 3. 用受邀账号验证登录和收发消息，按[复验与备份](server/deploy/README.md#复验与备份)成套备份 PostgreSQL 与附件目录。
 
-从源码运行见[服务配置](server/README.md)。镜像使用客户端发布的固定版本 Web 包；公开版本与产物摘要见[发布指南](docs/releases.md)和[兼容清单](server/deploy/compatibility.json)。
+从源码运行见[服务配置](server/README.md)。镜像使用客户端发布的固定版本 Web 包；公开版本与产物摘要见[发布指南](docs/releases.md)和[0.1.2 兼容清单](server/deploy/releases/0.1.2.json)。
 
 ## 接入自己的 Agent
 

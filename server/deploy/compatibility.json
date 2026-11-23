@@ -1,5 +1,9 @@
 {
   "schemaVersion": 1,
+  "publishedRelease": {
+    "version": "0.1.2",
+    "record": "releases/0.1.2.json"
+  },
   "status": "alpha-deployed-to-private-test-environment",
   "validatedAt": "2026-10-30",
   "buildProfile": "release",

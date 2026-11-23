@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "release": "0.1.2",
+  "protocol": {
+    "node": "v4",
+    "encryption": "sealedV1"
+  },
+  "client": {
+    "version": "0.1.2",
+    "commit": "8eeb5c1b29593372bb982f252068f03c19e19886",
+    "release": "https://github.com/NingCold/llm-nest/releases/tag/v0.1.2",
+    "checks": "https://github.com/NingCold/llm-nest/actions/runs/45187006944",
+    "releaseBuild": "https://github.com/NingCold/llm-nest/actions/runs/45195419029",
+    "web": {
+      "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.2/llmn-web-0.1.2.tar.gz",
+      "sha256": "095241738ed275ad2add68ee3e56ba56bc4a7f5dcac30fe0e2e69259fe7f99ab",
+      "manifest": {
+        "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.2/web-manifest.json",
+        "sha256": "41d4b4ec290bdba328f310309d4536900ce0e5b2a476cdf9aa7a5f39e2f4557c"
+      }
+    },
+    "installers": {
+      "windowsX64Nsis": {
+        "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.2/LLM-Nest_0.1.2_x64-setup.exe",
+        "sha256": "2c8b86ca940bcd21a684b3c0770d5c48ebfa5c7d9301233c36e55b03b7e4563a"
+      },
+      "windowsX64Msi": {
+        "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.2/LLM-Nest_0.1.2_x64_en-US.msi",
+        "sha256": "1ada7bb48587b1a2b7ab1174acec58821da621393c02cb446c73458c2e875808"
+      },
+      "linuxX64Deb": {
+        "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.2/LLM-Nest_0.1.2_amd64.deb",
+        "sha256": "b71ccc930e210f6b6437ceaaf254d13c98889f484cd371383a63622ca24e2371"
+      },
+      "linuxX64AppImage": {
+        "url": "https://github.com/NingCold/llm-nest/releases/download/v0.1.2/LLM-Nest_0.1.2_amd64.AppImage",
+        "sha256": "eba7094f36979ffe1f95cd2dbe46daf8ef2351fcd269b29f454501ed51fb0c1d"
+      }
+    }
+  },
+  "server": {
+    "version": "0.1.2",
+    "commit": "4e9a3682e465baa2aab1622e93792eac193bec5d",
+    "release": "https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.2",
+    "checks": "https://github.com/NingCold/llm-nest-server/actions/runs/45187007595",
+    "releaseBuild": "https://github.com/NingCold/llm-nest-server/actions/runs/45197725513",
+    "image": {
+      "url": "https://github.com/NingCold/llm-nest-server/releases/download/v0.1.2/llmn-server-image.tar.gz",
+      "sha256": "82b1036059502110938f5b3bd559812b832bfd87840761f6fe3c4f1b177394ca",
+      "tag": "llmn-server:v0.1.2",
+      "id": "sha256:dd97635afa1a423d0b1b5acab1e388b9ae503dd659b2bcea750ab33864e4740d"
+    },
+    "manifest": {
+      "url": "https://github.com/NingCold/llm-nest-server/releases/download/v0.1.2/image-manifest.json",
+      "sha256": "66d0725ae3a52de0318129cf33b8b77239ed1fe1a0099c3a597de5685d72c446"
+    },
+    "webVersion": "0.1.2"
+  },
+  "agent": {
+    "version": "0.1.2",
+    "commit": "2ef10a3fa8faa7379805499168881322406b8a7e",
+    "release": "https://github.com/NingCold/llm-nest-agent/releases/tag/v0.1.2",
+    "checks": "https://github.com/NingCold/llm-nest-agent/actions/runs/45179547853",
+    "releaseBuild": "https://github.com/NingCold/llm-nest-agent/actions/runs/45191636670",
+    "manifest": {
+      "url": "https://github.com/NingCold/llm-nest-agent/releases/download/v0.1.2/agent-manifest.json",
+      "sha256": "3424a2f64872a769ea47e39e92da0a2426ecf5dacefd6f8f384f2f1fecd9fbb2"
+    },
+    "binaries": {
+      "x86_64-pc-windows-msvc": {
+        "url": "https://github.com/NingCold/llm-nest-agent/releases/download/v0.1.2/llmn-agent-0.1.2-x86_64-pc-windows-msvc.exe",
+        "sha256": "10e971da9273353d9a5cc5f8368d4fe433ed5fa57038778b60ee9fc429794747"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/NingCold/llm-nest-agent/releases/download/v0.1.2/llmn-agent-0.1.2-x86_64-unknown-linux-gnu",
+        "sha256": "4652da1f0836f579ab129a4272b87a38bdc739242d8d0afe649a539c9a1735be"
+      }
+    }
+  },
+  "android": {
+    "version": "0.1.2",
+    "commit": "f1cc9f985df829c36ad506e203db0b66a170a03c",
+    "release": "https://github.com/NingCold/llm-nest-app/releases/tag/v0.1.2",
+    "checks": "https://github.com/NingCold/llm-nest-app/actions/runs/45191638141",
+    "distribution": "source-only",
+    "sourceArchive": "https://api.github.com/repos/NingCold/llm-nest-app/tarball/v0.1.2",
+    "applicationId": "com.llmnest.android",
+    "versionCode": 6,
+    "sharedCryptoCommit": "8eeb5c1b29593372bb982f252068f03c19e19886"
+  },
+  "connector": {
+    "version": "0.1.2",
+    "commit": "fc195d9ad2b541123b70b6a4a8ab02719c3a2e36",
+    "release": "https://github.com/NingCold/llm-nest-connect/releases/tag/v0.1.2",
+    "checks": "https://github.com/NingCold/llm-nest-connect/actions/runs/45191637622",
+    "crate": "connector",
+    "sourcePackage": {
+      "url": "https://github.com/NingCold/llm-nest-connect/releases/download/v0.1.2/connector-0.1.2.crate",
+      "sha256": "1d87aa7dfc8b63bb8855762b9a0d43f75328dfa200fa229060f6dcea6401447b"
+    }
+  },
+  "verification": {
+    "interoperability": {
+      "sdk": [
+        "Matrix WASM",
+        "Matrix Rust"
+      ],
+      "database": "disposable PostgreSQL",
+      "mockModelCalls": {
+        "full": 21,
+        "migration": 0
+      },
+      "externalModelCalls": 0,
+      "backupRotation": {
+        "oldFileReadArchivedHistory": true,
+        "oldFileCannotReadNewSession": true,
+        "newFileAdmittedFreshDevice": true,
+        "newFileReadRotatedSession": true
+      },
+      "historyMigrationAcrossBackupGenerations": {
+        "oldFileOnlyReadsFirst": true,
+        "newFileOnlyReadsSecond": true,
+        "verifiedWithBoth": true
+      }
+    },
+    "packaging": {
+      "windows": "NSIS and MSI identity and icons checked",
+      "linux": "deb and AppImage GUI launch tested under Xvfb",
+      "server": "image started against an isolated PostgreSQL instance; health endpoint and embedded Web entry point verified",
+      "android": "interoperability tested on an Android 36 emulator; unsigned APK inspected, not distributed",
+      "connector": "crate compiled from packaged source"
+    },
+    "securityReview": "Independent remediation review of the commits listed above passed.",
+    "notTested": [
+      "clean Windows or system-wide MSI installation",
+      "manual GNOME desktop session",
+      "upgrade of the deployed private site"
+    ]
+  }
+}

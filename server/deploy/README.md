@@ -8,15 +8,15 @@
 
 ## 使用发布镜像
 
-下载同一服务端 Release 的镜像、清单、许可证与 SHA256SUMS，在附件所在目录核对后加载：
+下载 [0.1.2 Release](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.2) 的全部附件，在同一目录核对后加载镜像：
 
 ```sh
 sha256sum --check SHA256SUMS
 docker load --input llmn-server-image.tar.gz
-docker image inspect llmn-server:v0.1.1-alpha.12
+docker image inspect llmn-server:v0.1.2
 ```
 
-在私有 `cloud.env` 中设置 `CLOUD_SERVER_IMAGE=llmn-server:v0.1.1-alpha.12`，按下文启动。版本换成实际核验的固定版本；保留上一可回退镜像和兼容组合，不通过删除数据更新服务。固定 Release 附件须由维护者检查后公开；公开软件产物不代表开放站点注册。
+在私有 `cloud.env` 中设置 `CLOUD_SERVER_IMAGE=llmn-server:v0.1.2`，按下文启动。从 Alpha 升级前，备份数据库和附件，阅读[旧设备与恢复文件迁移](../../docs/legacy-device-recovery.md)。保留上一可回退镜像；升级不删除数据。
 
 ## 从源码准备镜像
 
@@ -57,7 +57,7 @@ CLOUD_PUBLIC_URL=https://100.64.0.10:8443
 CLOUD_DATA_DIR=/srv/llmn-test/data
 CLOUD_CERT_DIR=/srv/llmn-test/private/tls
 TAILSCALE_IP=100.64.0.10
-CLOUD_SERVER_IMAGE=llmn-server:v0.1.1-alpha.12
+CLOUD_SERVER_IMAGE=llmn-server:v0.1.2
 ```
 
 将 `compose.yaml` 与 `nginx.conf` 放入独立部署目录（下例为 `/srv/llmn-test/deploy/`）。保留原私有环境文件和数据，确认 `CLOUD_SERVER_IMAGE` 对应的镜像已加载后启动；部署目录无需源码或构建上下文：
