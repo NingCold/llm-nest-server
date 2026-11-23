@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "cloud-server"
-version = "0.1.1-alpha.13"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "axum",
@@ -255,13 +255,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http",
+ "url",
  "uuid",
  "zip",
 ]
 
 [[package]]
 name = "connector"
-version = "0.1.1-alpha.13"
+version = "0.1.2"
+source = "git+https://github.com/NingCold/llm-nest-connect.git?rev=fc195d9ad2b541123b70b6a4a8ab02719c3a2e36#fc195d9ad2b541123b70b6a4a8ab02719c3a2e36"
 dependencies = [
  "futures-util",
  "native-tls",
@@ -1670,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "social"
-version = "0.1.1-alpha.13"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",

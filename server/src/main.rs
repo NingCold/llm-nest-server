@@ -37,19 +37,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => {}
     }
-    let public_url = std::env::var("CLOUD_PUBLIC_URL")
-        .map_err(|_| "缺少 CLOUD_PUBLIC_URL")?
-        .trim_end_matches('/')
-        .to_owned();
-    let parsed: axum::http::Uri = public_url.parse()?;
-    if parsed.authority().is_none()
-        || parsed.path() != "/"
-        || !(parsed.scheme_str() == Some("https")
-            || (parsed.scheme_str() == Some("http")
-                && matches!(parsed.host(), Some("localhost" | "127.0.0.1" | "[::1]"))))
-    {
-        return Err("CLOUD_PUBLIC_URL 须为 HTTPS 站点地址；本机开发可用 HTTP".into());
-    }
+    let public_url =
+        public_origin(&std::env::var("CLOUD_PUBLIC_URL").map_err(|_| "缺少 CLOUD_PUBLIC_URL")?)?;
     let attachments = PathBuf::from(
         std::env::var("CLOUD_ATTACHMENTS_DIR").map_err(|_| "缺少 CLOUD_ATTACHMENTS_DIR")?,
     );
@@ -105,4 +94,49 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = maintenance.await;
     result?;
     Ok(())
+}
+
+/// Serialize exactly the origin browsers use in their Origin header.
+fn public_origin(value: &str) -> Result<String, &'static str> {
+    let invalid =
+        "CLOUD_PUBLIC_URL 须为 HTTPS 站点来源，不含路径、账号或查询参数；本机开发可用 HTTP";
+    let url = url::Url::parse(value).map_err(|_| invalid)?;
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
+        || url.host().is_none()
+        || url.path() != "/"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid);
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_origin;
+
+    #[test]
+    fn matches_the_origin_sent_by_browsers() {
+        assert_eq!(
+            public_origin("https://Chat.EXAMPLE:443/"),
+            Ok("https://chat.example".into())
+        );
+        assert_eq!(
+            public_origin("http://[::1]:8080"),
+            Ok("http://[::1]:8080".into())
+        );
+        for bad in [
+            "http://chat.example",
+            "https://chat.example/app",
+            "https://chat.example/?v=1",
+            "https://chat.example/#/auth",
+            "https://user@chat.example",
+        ] {
+            assert!(public_origin(bad).is_err(), "{bad}");
+        }
+    }
 }

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["server", "connector", "crates/social"]
+members = ["server", "crates/social"]
 
 [workspace.package]
 license = "Apache-2.0"
 repository = "https://github.com/NingCold/llm-nest-server"
-version = "0.1.1-alpha.13"
+version = "0.1.2"
 edition = "2024"
 
 [workspace.dependencies]
@@ -28,4 +28,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 path = "crates/social"
 
 [workspace.dependencies.connector]
-path = "connector"
+git = "https://github.com/NingCold/llm-nest-connect.git"
+rev = "fc195d9ad2b541123b70b6a4a8ab02719c3a2e36"

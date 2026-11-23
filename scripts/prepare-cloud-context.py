@@ -6,33 +6,28 @@ from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import tarfile
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-MEMBERS = ('server', 'connector', 'crates/social')
+MEMBERS = ('server', 'crates/social')
 WEB_NOTICES = ('LICENSE.txt', 'NOTICE.txt', 'THIRD_PARTY_NOTICES.txt')
 
 
-def toml_value(value):
-    if isinstance(value, dict):
-        return '{' + ', '.join(f'{json.dumps(k)} = {toml_value(v)}' for k, v in value.items()) + '}'
-    if isinstance(value, bool):
-        return str(value).lower()
-    return json.dumps(value)
-
-
-def create(output, web, manifest_path, version, notices, root=ROOT, lock=True):
+def create(output, web, manifest_path, version, notices, root=ROOT):
     if not notices.read_text(encoding='utf-8').strip():
         raise ValueError('Rust third-party notices are empty')
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     if not version or version == 'latest' or manifest.get('schemaVersion') != 1 or manifest.get('webVersion') != version:
         raise ValueError('Web artifact version mismatch')
-    if hashlib.sha256(web.read_bytes()).hexdigest() != manifest.get('sha256'):
+    with web.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    if digest != manifest.get('sha256'):
         raise ValueError('Web artifact SHA256 mismatch')
     with tarfile.open(web, 'r:gz') as tar:
         entries = tar.getmembers()
         if any(not (e.isfile() or e.isdir()) or PurePosixPath(e.name).is_absolute() or '..' in PurePosixPath(e.name).parts or '\\' in e.name or ':' in e.name for e in entries):
             raise ValueError('Web archive contains an unsafe path or link')
+        if len({PurePosixPath(e.name) for e in entries}) != len(entries):
+            raise ValueError('Web archive contains duplicate paths')
         if not any(e.name == 'index.html' and e.isfile() for e in entries):
             raise ValueError('Web archive has no index.html')
         for name in WEB_NOTICES:
@@ -49,14 +44,9 @@ def create(output, web, manifest_path, version, notices, root=ROOT, lock=True):
                 target.mkdir(parents=True, exist_ok=True)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(tar.extractfile(entry).read())
-    workspace = tomllib.loads((root / 'Cargo.toml').read_text(encoding='utf-8'))['workspace']
-    names = set()
+                with tar.extractfile(entry) as source, target.open('wb') as destination:
+                    shutil.copyfileobj(source, destination)
     for member in MEMBERS:
-        package = tomllib.loads((root / member / 'Cargo.toml').read_text(encoding='utf-8'))
-        for section, values in package.items():
-            if section.endswith('dependencies'):
-                names.update(k for k, v in values.items() if isinstance(v, dict) and v.get('workspace'))
         # Copy the tracked working-tree snapshot, including staged new files and local edits; never build/data directories.
         tracked = subprocess.check_output(['git', 'ls-files', '-z', '--', member], cwd=root).decode().split('\0')
         for name in filter(None, tracked):
@@ -65,27 +55,13 @@ def create(output, web, manifest_path, version, notices, root=ROOT, lock=True):
                 destination = output / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
-    text = '[workspace]\nresolver = "2"\nmembers = ' + toml_value(list(MEMBERS)) + '\n\n[workspace.package]\n'
-    text += ''.join(f'{k} = {toml_value(v)}\n' for k, v in workspace['package'].items())
-    text += '\n[workspace.dependencies]\n'
-    text += ''.join(f'{json.dumps(k)} = {toml_value(workspace["dependencies"][k])}\n' for k in sorted(names))
-    (output / 'Cargo.toml').write_text(text, encoding='utf-8')
+    shutil.copy2(root / 'Cargo.toml', output / 'Cargo.toml')
     shutil.copy2(root / 'Cargo.lock', output / 'Cargo.lock')
     shutil.copy2(root / 'server/Dockerfile', output / 'Dockerfile')
     shutil.copy2(manifest_path, output / 'web-manifest.json')
     shutil.copy2(root / 'LICENSE', output / 'LICENSE')
     shutil.copy2(root / 'NOTICE', output / 'NOTICE')
     shutil.copy2(notices, output / 'THIRD-PARTY-NOTICES.txt')
-    if lock:
-        # Converge workspace members offline without fetching dependency source archives.
-        # Pruning workspace members may rewrite the lock, but dependency versions must stay pinned.
-        original = tomllib.loads((root / 'Cargo.lock').read_text(encoding='utf-8'))
-        subprocess.run(['cargo', 'update', '--workspace', '--offline'], cwd=output, check=True, stdout=subprocess.DEVNULL)
-        resolved = tomllib.loads((output / 'Cargo.lock').read_text(encoding='utf-8'))
-        def identities(data):
-            return {(p['name'], p['version'], p.get('source'), p.get('checksum')) for p in data['package']}
-        if not identities(resolved) <= identities(original):
-            raise ValueError('Cloud context resolution changed pinned dependencies; update the source lock explicitly')
     return output
 
 

@@ -23,7 +23,7 @@ def validate_migrations():
 
 def validate(tag=None):
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
-    assert set(workspace["members"]) == {"server", "connector", "crates/social"}
+    assert set(workspace["members"]) == {"server", "crates/social"}
     for member in workspace["members"]:
         package = tomllib.loads((ROOT / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]
         assert package["version"] == {"workspace": True}

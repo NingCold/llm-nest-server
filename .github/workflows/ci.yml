@@ -37,6 +37,8 @@ jobs:
           cargo fmt --all -- --check
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked
+          cargo build -p cloud-server --locked
+          python scripts/chat-smoke.py target/debug/cloud-server
           python scripts/release.py validate
           python scripts/test_release.py
           python scripts/check-boundaries.py

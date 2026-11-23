@@ -32,7 +32,7 @@ docker build --tag llmn-server:local-reviewed /path/to/cloud-context
 
 将示例中的 Web 版本换成实际版本，打包和准备上下文各用一个空目录。脚本核对版本、摘要和归档路径，并要求 Rust 声明及 Web 包根目录的 `LICENSE.txt`、`NOTICE.txt`、`THIRD_PARTY_NOTICES.txt` 均非空。
 
-构建上下文保留 Web 清单，只从 `server`、`connector`、`crates/social` 复制受 Git 跟踪的源码。脚本用本机 Cargo 索引缓存离线整理锁文件，保持依赖版本不变。将上下文复制到构建机即可构建。部署时把 `CLOUD_SERVER_IMAGE` 设为实际镜像名，并记录服务端、Web 和 Agent 的固定版本与摘要。
+构建上下文保留 Web 清单，只从 `server` 和 `crates/social` 复制受 Git 跟踪的源码，并原样保留 Cargo.toml、Cargo.lock。Docker 构建时按锁文件获取独立的连接器及依赖。将上下文复制到构建机即可构建。部署时把 `CLOUD_SERVER_IMAGE` 设为实际镜像名，并记录服务端、Web 和 Agent 的固定版本与摘要。
 
 ## 准备目录与证书
 

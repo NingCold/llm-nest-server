@@ -1,48 +1,77 @@
-name: Server release draft
+name: Build server image
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing v<server version> tag to build and draft
-        required: true
+        description: Existing v<server version> tag (empty builds a candidate only)
+        required: false
         type: string
       web_version:
         description: Exact client Web version
         required: true
       web_url:
-        description: Permanent URL for the versioned Web tar.gz
-        required: true
+        description: Permanent HTTPS URL for the released Web tar.gz
+        required: false
       web_manifest_url:
-        description: Permanent URL for its SHA-256 manifest
-        required: true
+        description: Permanent HTTPS URL for its SHA-256 manifest
+        required: false
+      web_ci_run:
+        description: Client main CI run ID for an unpublished candidate (no release_tag or URLs)
+        required: false
 permissions:
   contents: read
 defaults:
   run:
     shell: bash
 concurrency:
-  group: server-release-${{ inputs.release_tag }}
+  group: server-release-${{ inputs.release_tag || github.run_id }}
   cancel-in-progress: false
 env:
   RELEASE_TAG: ${{ inputs.release_tag }}
 jobs:
   image:
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      build_sha: ${{ steps.source.outputs.sha }}
     runs-on: ubuntu-24.04
     env:
       RUSTUP_TOOLCHAIN: 1.99.1
       WEB_VERSION: ${{ inputs.web_version }}
+      WEB_CI_RUN: ${{ inputs.web_ci_run }}
       WEB_URL: ${{ inputs.web_url }}
       WEB_MANIFEST_URL: ${{ inputs.web_manifest_url }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ format('refs/tags/{0}', inputs.release_tag) }}
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify existing tag and version
+        id: source
         run: |
           python scripts/test_release.py
-          python scripts/release.py validate --tag "$RELEASE_TAG"
+          if [[ -n "$WEB_CI_RUN" ]]; then
+            [[ "$WEB_CI_RUN" =~ ^[0-9]+$ && -z "$RELEASE_TAG" && -z "$WEB_URL" && -z "$WEB_MANIFEST_URL" ]]
+          else
+            [[ -n "$WEB_URL" && -n "$WEB_MANIFEST_URL" ]]
+          fi
+          if [[ -n "$RELEASE_TAG" ]]; then
+            python scripts/release.py validate --tag "$RELEASE_TAG"
+          else
+            python scripts/release.py validate
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Download candidate Web from successful client main CI
+        if: inputs.web_ci_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          client=NingCold/llm-nest
+          run=$(gh api "repos/$client/actions/runs/$WEB_CI_RUN")
+          jq -e '.status == "completed" and .conclusion == "success" and .event == "push" and .head_branch == "main" and .head_repository.full_name == "NingCold/llm-nest" and .path == ".github/workflows/ci.yml"' <<< "$run" >/dev/null
+          gh run download "$WEB_CI_RUN" --repo "$client" --name web-candidate --dir candidate-web
       - name: Prepare fixed inputs
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -53,14 +82,21 @@ jobs:
           tar -xzf cargo-about.tar.gz --strip-components=1 -C cargo-about-bin
           mkdir artifact
           ./cargo-about-bin/cargo-about generate --manifest-path server/Cargo.toml --target x86_64-unknown-linux-gnu --locked --fail --config scripts/licenses/about.toml --output-file artifact/THIRD-PARTY-NOTICES.txt scripts/licenses/notices.hbs
-          curl --fail --location --proto '=https' "$WEB_URL" --output artifact/web.tar.gz
-          curl --fail --location --proto '=https' "$WEB_MANIFEST_URL" --output artifact/web-manifest.json
+          if [[ -n "$WEB_CI_RUN" ]]; then
+            [[ "$WEB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9.+-]+)?$ ]]
+            cp "candidate-web/llmn-web-$WEB_VERSION.tar.gz" artifact/web.tar.gz
+            cp candidate-web/web-manifest.json artifact/web-manifest.json
+          else
+            curl --fail --location --proto '=https' --proto-redir '=https' --output artifact/web.tar.gz -- "$WEB_URL"
+            curl --fail --location --proto '=https' --proto-redir '=https' --output artifact/web-manifest.json -- "$WEB_MANIFEST_URL"
+          fi
           python scripts/prepare-cloud-context.py --web-artifact artifact/web.tar.gz --web-manifest artifact/web-manifest.json --web-version "$WEB_VERSION" --third-party-notices artifact/THIRD-PARTY-NOTICES.txt --output artifact/context
       - name: Build image and save checksums
         run: |
-          docker build --tag llmn-server:"$RELEASE_TAG" artifact/context
-          docker image inspect llmn-server:"$RELEASE_TAG" > artifact/image-manifest.json
-          docker save llmn-server:"$RELEASE_TAG" | gzip > artifact/llmn-server-image.tar.gz
+          image="llmn-server:${RELEASE_TAG:-candidate-$GITHUB_SHA}"
+          docker build --tag "$image" --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" artifact/context
+          docker image inspect "$image" > artifact/image-manifest.json
+          docker save "$image" | gzip > artifact/llmn-server-image.tar.gz
           cp LICENSE NOTICE artifact/
           (cd artifact && sha256sum llmn-server-image.tar.gz image-manifest.json web-manifest.json THIRD-PARTY-NOTICES.txt LICENSE NOTICE > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -76,6 +112,7 @@ jobs:
             artifact/NOTICE
 
   draft-release:
+    if: inputs.release_tag != ''
     needs: image
     runs-on: ubuntu-24.04
     permissions:
@@ -89,8 +126,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ needs.image.outputs.build_sha }}
         run: |
           set -euo pipefail
+          remote_sha=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          [[ "$remote_sha" == "$BUILD_SHA" ]] || { echo "Release tag moved since the build" >&2; exit 1; }
           cat > release-notes.md <<'NOTES'
           LLM-Nest Server 镜像与固定 Web 组合。
 

@@ -8,6 +8,7 @@ edition.workspace = true
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 connector.workspace = true
+url = "2"
 tokio.workspace = true
 tokio-util.workspace = true
 serde.workspace = true

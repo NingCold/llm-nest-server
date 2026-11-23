@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 import tarfile
 import io
 import hashlib
@@ -50,7 +49,7 @@ class ArtifactTests(unittest.TestCase):
                 manifest = root / 'manifest.json'
                 manifest.write_text(json.dumps({'schemaVersion': 1, 'webVersion': '1.2.3', 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}))
                 with self.assertRaisesRegex(ValueError, 'unsafe path'):
-                    cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
+                    cloud.create(root / 'out', artifact, manifest, '1.2.3', notices)
                 self.assertFalse((root / 'out').exists())
 
     def test_missing_or_empty_distribution_notices_are_rejected(self):
@@ -72,45 +71,29 @@ class ArtifactTests(unittest.TestCase):
                     manifest = root / 'manifest.json'
                     manifest.write_text(json.dumps({'schemaVersion': 1, 'webVersion': '1.2.3', 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}))
                     with self.assertRaisesRegex(ValueError, 'missing or empty notice'):
-                        cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
+                        cloud.create(root / 'out', artifact, manifest, '1.2.3', notices)
                     self.assertFalse((root / 'out').exists())
             notices.write_text('  ')
             with self.assertRaisesRegex(ValueError, 'Rust third-party notices are empty'):
-                cloud.create(root / 'out', artifact, manifest, '1.2.3', notices, lock=False)
+                cloud.create(root / 'out', artifact, manifest, '1.2.3', notices)
 
-    def test_context_lock_resolution_keeps_existing_dependency_versions(self):
+    def test_duplicate_file_cannot_replace_verified_notice(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            archive = root / 'web.tar.gz'
+            with tarfile.open(archive, 'w:gz') as tar:
+                for name in ('index.html', *cloud.WEB_NOTICES, './NOTICE.txt'):
+                    body = b'' if name.startswith('./') else b'fixture'
+                    entry = tarfile.TarInfo(name)
+                    entry.size = len(body)
+                    tar.addfile(entry, io.BytesIO(body))
+            manifest = root / 'manifest.json'
+            manifest.write_text(json.dumps({'schemaVersion': 1, 'webVersion': '1.2.3', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}))
             notices = root / 'notices.txt'
-            notices.write_text('Fixture dependency license text')
-            repo = root / 'repository'
-            repo.mkdir()
-            (repo / 'Cargo.toml').write_text('[workspace.package]\nversion="1.2.3"\nedition="2024"\n[workspace.dependencies]\n')
-            (repo / 'LICENSE').write_text('Fixture project license')
-            (repo / 'NOTICE').write_text('Fixture project notice')
-            (repo / 'Cargo.lock').write_text('[[package]]\nname="fixture"\nversion="1.2.3"\n')
-            for member in cloud.MEMBERS:
-                package = repo / member
-                package.mkdir(parents=True)
-                (package / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="1.2.3"\n')
-            (repo / 'server/Dockerfile').write_text('FROM fixture')
-            dist = root / 'dist'
-            dist.mkdir()
-            (dist / 'index.html').write_text('fixture')
-            artifact = web.package(dist, root / 'artifact', '1.2.3')
-            manifest = artifact.parent / 'web-manifest.json'
-            def keep_lock(command, **kwargs):
-                self.assertEqual(command, ['cargo', 'update', '--workspace', '--offline'])
-            with patch.object(cloud.subprocess, 'check_output', return_value=b''), patch.object(cloud.subprocess, 'run', side_effect=keep_lock):
-                cloud.create(root / 'same-lock', artifact, manifest, '1.2.3', notices, root=repo)
-            def change_lock(command, **kwargs):
-                self.assertEqual(command, ['cargo', 'update', '--workspace', '--offline'])
-                self.assertEqual(kwargs['cwd'], root / 'changed-lock')
-                (kwargs['cwd'] / 'Cargo.lock').write_text('[[package]]\nname="unexpected"\nversion="99.0.0"\n')
-            with patch.object(cloud.subprocess, 'check_output', return_value=b''), patch.object(cloud.subprocess, 'run', side_effect=change_lock):
-                with self.assertRaisesRegex(ValueError, 'changed pinned dependencies'):
-                    cloud.create(root / 'changed-lock', artifact, manifest, '1.2.3', notices, root=repo)
-            self.assertIn('name="fixture"', (repo / 'Cargo.lock').read_text())
+            notices.write_text('Rust dependency license text')
+            with self.assertRaisesRegex(ValueError, 'duplicate paths'):
+                cloud.create(root / 'out', archive, manifest, '1.2.3', notices)
+            self.assertFalse((root / 'out').exists())
 
     def test_web_digest_version_and_context_boundaries(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,14 +106,17 @@ class ArtifactTests(unittest.TestCase):
             artifact = web.package(dist, root / 'artifact', '1.2.3')
             manifest = artifact.parent / 'web-manifest.json'
             with self.assertRaisesRegex(ValueError, 'version mismatch'):
-                cloud.create(root / 'bad', artifact, manifest, '2.0.0', notices, lock=False)
-            context = cloud.create(root / 'context', artifact, manifest, '1.2.3', notices, lock=False)
+                cloud.create(root / 'bad', artifact, manifest, '2.0.0', notices)
+            context = cloud.create(root / 'context', artifact, manifest, '1.2.3', notices)
             self.assertTrue((context / 'web/index.html').is_file())
             for name in cloud.WEB_NOTICES:
                 self.assertEqual((context / 'web' / name).read_text(), f'Fixture Web {name}')
             self.assertEqual((context / 'LICENSE').read_bytes(), (cloud.ROOT / 'LICENSE').read_bytes())
             self.assertEqual((context / 'NOTICE').read_bytes(), (cloud.ROOT / 'NOTICE').read_bytes())
             self.assertEqual((context / 'THIRD-PARTY-NOTICES.txt').read_bytes(), notices.read_bytes())
+            for file in ('Cargo.lock', 'Cargo.toml'):
+                self.assertEqual((context / file).read_bytes(), (cloud.ROOT / file).read_bytes())
+            self.assertFalse((context / 'connector').exists())
             self.assertFalse((context / 'agent').exists())
             self.assertFalse((context / 'client').exists())
             self.assertFalse((context / 'crates/runtime').exists())
@@ -139,7 +125,7 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(workspace['members'], list(cloud.MEMBERS))
             artifact.write_bytes(b'tampered')
             with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
-                cloud.create(root / 'tampered', artifact, manifest, '1.2.3', notices, lock=False)
+                cloud.create(root / 'tampered', artifact, manifest, '1.2.3', notices)
 
 
 if __name__ == '__main__':

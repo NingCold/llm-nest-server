@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=ROOT, text=True, encoding="utf-8"))
     packages = {p["name"]: p for p in metadata["packages"]}
-    assert set(packages) == {"cloud-server", "connector", "social"}, "Unexpected workspace package"
+    assert set(packages) == {"cloud-server", "social"}, "Unexpected workspace package"
     for name, package in packages.items():
         assert package["license"] == "Apache-2.0", f"Unexpected project license: {name}"
         for dependency in package["dependencies"]:
@@ -16,6 +16,8 @@ def main():
                 assert Path(dependency["path"]).resolve().is_relative_to(ROOT), "Dependency leaves repository"
                 assert dependency["name"] in packages, "Unexpected local dependency"
                 assert name == "cloud-server" or dependency["name"] != "cloud-server", "Protocol depends on server"
+    connector = next(d for d in packages["cloud-server"]["dependencies"] if d["name"] == "connector")
+    assert re.fullmatch(r"git\+https://github\.com/NingCold/llm-nest-connect\.git\?rev=[0-9a-f]{40}", connector["source"] or ""), "Connector must be pinned to its own repository"
     # Literal upstream attributions must track the exact package versions in the lock.
     template = (ROOT / "scripts/licenses/notices.hbs").read_text(encoding="utf-8")
     attributed = set(re.findall(r"^Attribution applies to: ([\w-]+) ([\w.+-]+)$", template, re.M))

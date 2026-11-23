@@ -3,7 +3,6 @@ FROM rust:1.99.1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/social crates/social
-COPY connector connector
 COPY server server
 RUN cargo build --release --locked -p cloud-server
 

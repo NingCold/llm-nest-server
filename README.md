@@ -14,9 +14,9 @@
 
 ## 接入自己的 Agent
 
-已有站点时，可用[官方 Agent](https://github.com/NingCold/llm-nest-agent)接入模型。开发自己的 Agent，可引用 Rust [connector](connector/README.md)，也可以直接实现 [HTTP/WSS API](docs/design/api.md)。
+已有站点时，可用[官方 Agent](https://github.com/NingCold/llm-nest-agent)接入模型。开发自己的 Agent，可引用 Rust [LLM Nest Connect](https://github.com/NingCold/llm-nest-connect)，也可以直接实现 [HTTP/WSS API](docs/design/api.md)。
 
-节点协议为 **v4**，加密封装为 **sealedV1**。Rust 集成固定协议提交并保留锁文件；参与加密聊天的节点还须按[加密契约](docs/design/crypto-contract.md)建立身份与设备信任。
+节点协议为 **v4**，加密封装为 **sealedV1**。Rust 集成固定连接器提交并保留锁文件；参与加密聊天的节点还须按[加密契约](docs/design/crypto-contract.md)建立身份与设备信任。
 
 [开发](docs/development.md) · [设计](docs/design/README.md) · [共用数据类型](crates/social/README.md) · [迁移](docs/migration.md)
 

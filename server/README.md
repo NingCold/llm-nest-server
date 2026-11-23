@@ -18,7 +18,7 @@ cargo run -p cloud-server --locked
 | 环境变量 | 用途 |
 | --- | --- |
 | `CLOUD_DATABASE_URL` | PostgreSQL 连接串；启动自动运行顺序迁移 |
-| `CLOUD_PUBLIC_URL` | 页面公开来源；HTTPS，本机开发允许 localhost HTTP |
+| `CLOUD_PUBLIC_URL` | 页面公开来源，例如 https://chat.example，不含路径、查询、账号或片段；本机开发允许 localhost HTTP |
 | `CLOUD_ATTACHMENTS_DIR` | 附件持久目录，与静态网页和测试收件箱分开 |
 | `CLOUD_WEB_DIR` | 静态目录，默认 `web` |
 | `CLOUD_BIND` | 监听地址，默认 `127.0.0.1:8787` |

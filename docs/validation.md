@@ -1,6 +1,6 @@
 # 验证
 
-单仓检查见[开发](development.md)。PostgreSQL 测试需独立 `CLOUD_TEST_DATABASE_URL`；没有数据库的测试结果不能代替它。
+单仓检查见[开发](development.md)。PostgreSQL 测试需独立 `CLOUD_TEST_DATABASE_URL`；没有数据库的测试结果不能代替它。CI 还会运行 `python scripts/chat-smoke.py target/debug/cloud-server`：从真实服务进程注册、验证两个临时账号，检查双方打开同一个私聊、重试不重复发信、收件人读到消息。该脚本只用于可销毁的测试库，会写入账号和消息。
 
 `cargo test -p cloud-server crypto_directory` 验证设备目录版本匹配、旧客户端兼容、未确认响应重试、同值更新、公钥和签名变化、撤销、绑定、状态变化、改回原值及事务回滚；设备名字、心跳、一次性密钥和收件箱更新不得推进版本。客户端另须验证密钥查询或 SDK 确认失败时不保存新版本，以及重启后复用已确认版本。
 

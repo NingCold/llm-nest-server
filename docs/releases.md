@@ -8,8 +8,10 @@
 
 镜像随附项目 LICENSE、NOTICE 和 cargo-about 0.9.3 按 Linux 依赖生成的 THIRD-PARTY-NOTICES.txt。Web 声明随 Web 包保留，Debian 运行库声明位于镜像的 `/usr/share/doc/`。
 
-发布工作流必须填写已存在的 `release_tag`（如 `v0.1.1-alpha.12`）。流程 checkout 该 tag，核对其提交与本仓版本，再保存镜像检查 artifact 并创建或更新同 tag 的草稿 Release。只有草稿上传作业拥有 contents:write；已公开 Release 会被拒绝覆盖，不自动创建 tag、公开或部署。Release 附件包含镜像、image/web manifests、第三方声明、LICENSE、NOTICE，以及覆盖这些文件的 SHA256SUMS。
+候选镜像：在 **Build server image** 填写 `web_version` 和客户端 main 成功 CI 的 `web_ci_run`（run ID），留空 URL 和 tag。该流程校验来源、版本、SHA-256 与归档许可，将镜像作为 `server-image-review` 上传；不创建 tag 或 Release。
+
+正式发布改用已公开 Web 包及清单的固定 HTTPS 地址，填写已存在的 `release_tag`，留空 `web_ci_run`。流程 checkout 该 tag，核对其提交与本仓版本，再保存镜像检查 artifact 并创建或更新同 tag 的草稿 Release。只有草稿上传作业拥有 contents:write；已公开 Release 会被拒绝覆盖，不自动创建 tag、公开或部署。Release 附件包含镜像、image/web manifests、第三方声明、LICENSE、NOTICE，以及覆盖这些文件的 SHA256SUMS。
 
 ## 源码与协议包
 
-server、connector 和 social 均采用 [Apache-2.0](../LICENSE)，共用仓库的 [NOTICE](../NOTICE)。connector 和 social 通过固定 Git 提交分发，许可文件随源码提供。
+server 和 social 采用 [Apache-2.0](../LICENSE)，共用本仓库的 [NOTICE](../NOTICE)。[连接器](https://github.com/NingCold/llm-nest-connect)在独立仓库以 Apache-2.0 分发，使用方固定 Git 提交。
