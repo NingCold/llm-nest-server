@@ -4,7 +4,7 @@
 
 发布前用草稿附件的摘要生成兼容清单，随 Release 提供；公开后将同一清单保存在 `server/deploy/releases/`，从 [compatibility.json](../server/deploy/compatibility.json) 的 `publishedRelease` 引用。清单固定各组件的提交、下载地址与 SHA-256，并标明节点协议和加密封装。保留上一组可运行产物；回退服务不默认回退数据库。
 
-[0.1.2 稳定版](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.2)的镜像内含 Web 0.1.2；桌面、Agent、Android 源码及连接器见[同版兼容清单](../server/deploy/releases/0.1.2.json)。此前的 [alpha.12 镜像](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.1-alpha.12) 配套 Web alpha.13。[实际内网站点版本](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md#现在使用的是哪个版本)另行记录。
+[0.1.2 稳定版](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.2)的镜像内含 Web 0.1.2。各组件的首发版本和产物见[兼容清单](../server/deploy/releases/0.1.2.json)；后续补发的[同版 Android 签名 APK](https://github.com/NingCold/llm-nest-app/releases/tag/v0.1.2)可从移动端发布页下载。此前的 [alpha.12 镜像](https://github.com/NingCold/llm-nest-server/releases/tag/v0.1.1-alpha.12) 配套 Web alpha.13。[实际内网站点版本](https://github.com/NingCold/llm-nest/blob/main/docs/project/current.md#现在使用的是哪个版本)另行记录。
 
 镜像随附项目 LICENSE、NOTICE 和 cargo-about 0.9.3 按 Linux 依赖生成的 THIRD-PARTY-NOTICES.txt。Web 声明随 Web 包保留，Debian 运行库声明位于镜像的 `/usr/share/doc/`。
 
